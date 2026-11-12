@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Finora — Smart Personal Finance</title>
+  <meta name="description" content="Aplikasi keuangan pribadi untuk pantau saldo, catat transaksi harian, atur budget, dan ekspor laporan spreadsheet.">
+  <meta name="theme-color" content="#006948">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Finora">
+
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon.png">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            "primary-container": "#00855d",
+            "secondary-fixed-dim": "#ffb3b6",
+            "tertiary-fixed-dim": "#93ccff",
+            "inverse-surface": "#283044",
+            "surface": "#faf8ff",
+            "surface-container-highest": "#dae2fd",
+            "on-primary-fixed-variant": "#005137",
+            "surface-variant": "#dae2fd",
+            "on-tertiary-fixed-variant": "#004b73",
+            "on-tertiary-fixed": "#001d31",
+            "outline": "#6d7a72",
+            "on-surface": "#131b2e",
+            "tertiary": "#006194",
+            "tertiary-container": "#007bb9",
+            "inverse-primary": "#68dba9",
+            "surface-tint": "#006c4a",
+            "primary": "#006948",
+            "on-tertiary": "#ffffff",
+            "on-primary-fixed": "#002114",
+            "secondary": "#ba0035",
+            "secondary-fixed": "#ffdada",
+            "error-container": "#ffdad6",
+            "surface-container": "#eaedff",
+            "on-secondary": "#ffffff",
+            "error": "#ba1a1a",
+            "primary-fixed": "#85f8c4",
+            "on-tertiary-container": "#fdfcff",
+            "on-secondary-fixed-variant": "#920028",
+            "on-primary": "#ffffff",
+            "surface-container-lowest": "#ffffff",
+            "surface-dim": "#d2d9f4",
+            "on-background": "#131b2e",
+            "primary-fixed-dim": "#68dba9",
+            "on-error": "#ffffff",
+            "on-surface-variant": "#3d4a42",
+            "background": "#faf8ff",
+            "on-primary-container": "#f5fff7",
+            "on-secondary-fixed": "#40000c",
+            "surface-container-low": "#f2f3ff",
+            "secondary-container": "#e21e49",
+            "surface-container-high": "#e2e7ff",
+            "surface-bright": "#faf8ff",
+            "tertiary-fixed": "#cce5ff",
+            "inverse-on-surface": "#eef0ff",
+            "on-error-container": "#93000a",
+            "outline-variant": "#bccac0",
+            "on-secondary-container": "#fffbff"
+          },
+          borderRadius: {
+            "DEFAULT": "0.25rem",
+            "lg": "0.5rem",
+            "xl": "0.75rem",
+            "full": "9999px"
+          },
+          spacing: {
+            "gutter": "1rem",
+            "gutter-mobile": "0.75rem",
+            "margin-mobile": "1rem",
+            "space-xl": "2rem",
+            "space-md": "1rem",
+            "space-sm": "0.5rem",
+            "space-xs": "0.25rem",
+            "margin": "2rem",
+            "space-lg": "1.5rem"
+          },
+          fontFamily: {
+            "label-md": ["Plus Jakarta Sans", "sans-serif"],
+            "headline-sm": ["Plus Jakarta Sans", "sans-serif"],
+            "display-lg-mobile": ["Plus Jakarta Sans", "sans-serif"],
+            "body-lg": ["Plus Jakarta Sans", "sans-serif"],
+            "headline-lg": ["Plus Jakarta Sans", "sans-serif"],
+            "display-lg": ["Plus Jakarta Sans", "sans-serif"],
+            "numeric-hero": ["Plus Jakarta Sans", "sans-serif"],
+            "body-sm": ["Plus Jakarta Sans", "sans-serif"],
+            "label-sm": ["Plus Jakarta Sans", "sans-serif"],
+            "headline-md": ["Plus Jakarta Sans", "sans-serif"],
+            "numeric-table": ["Plus Jakarta Sans", "sans-serif"],
+            "body-md": ["Plus Jakarta Sans", "sans-serif"],
+            "label-lg": ["Plus Jakarta Sans", "sans-serif"]
+          },
+          fontSize: {
+            "label-md": ["12px", { "lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "600" }],
+            "headline-sm": ["18px", { "lineHeight": "26px", "fontWeight": "600" }],
+            "display-lg-mobile": ["28px", { "lineHeight": "36px", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+            "body-lg": ["16px", { "lineHeight": "24px", "fontWeight": "400" }],
+            "headline-lg": ["28px", { "lineHeight": "36px", "letterSpacing": "-0.015em", "fontWeight": "600" }],
+            "display-lg": ["36px", { "lineHeight": "44px", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+            "numeric-hero": ["34px", { "lineHeight": "40px", "letterSpacing": "-0.03em", "fontWeight": "700" }],
+            "body-sm": ["12px", { "lineHeight": "18px", "fontWeight": "400" }],
+            "label-sm": ["11px", { "lineHeight": "14px", "letterSpacing": "0.04em", "fontWeight": "600" }],
+            "headline-md": ["22px", { "lineHeight": "30px", "letterSpacing": "-0.01em", "fontWeight": "600" }],
+            "numeric-table": ["14px", { "lineHeight": "20px", "letterSpacing": "-0.01em", "fontWeight": "600" }],
+            "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+            "label-lg": ["14px", { "lineHeight": "20px", "letterSpacing": "0.01em", "fontWeight": "600" }]
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    @layer base {
+      html, body {
+        margin: 0;
+        padding: 0;
+        min-height: 100%;
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
+      .pt-safe { padding-top: env(safe-area-inset-top, 0px); }
+    }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+  </style>
+</head>
+<body class="bg-surface-container-low font-body-md text-on-surface antialiased">
+  <div class="mx-auto max-w-md min-h-screen bg-surface flex flex-col relative shadow-[0_0_40px_rgba(19,27,46,0.06)]">
+    <!-- Top Fixed App Header -->
+    <header class="fixed top-0 left-1/2 -translate-x-1/2 w-full max-w-md z-50 pt-safe bg-surface/85 backdrop-blur-xl shadow-[0_1px_8px_rgba(0,0,0,0.04)]">
+      <div class="h-16 px-margin-mobile flex items-center justify-between">
+        <button id="header-brand-btn" type="button" class="flex items-center gap-space-sm text-left">
+          <img alt="Finora Logo" class="h-9 w-9 rounded-xl object-cover shadow-xs" src="./icons/icon-192.png">
+          <div class="flex flex-col">
+            <span class="font-headline-sm text-headline-sm text-primary tracking-tight font-bold leading-tight">Finora</span>
+            <span id="header-subtitle" class="font-label-sm text-label-sm text-on-surface-variant">Smart Personal Finance</span>
+          </div>
+        </button>
+
+        <div class="flex items-center gap-1">
+          <button id="header-install-btn" type="button" class="hidden items-center gap-1 px-2.5 py-1.5 rounded-full bg-primary-fixed text-on-primary-fixed font-label-sm text-label-sm font-bold shadow-xs hover:opacity-90 active:scale-95 transition-all">
+            <span class="material-symbols-outlined text-[16px]">install_mobile</span>
+            <span>Pasang</span>
+          </button>
+
+          <button id="btn-notif" type="button" aria-label="Notifikasi" class="relative w-10 h-10 flex items-center justify-center rounded-full text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors">
+            <span class="material-symbols-outlined text-[22px]">notifications</span>
+            <span id="notif-dot" class="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-secondary ring-2 ring-surface"></span>
+          </button>
+
+          <button id="btn-profile" type="button" aria-label="Pengaturan & Profil" class="w-10 h-10 flex items-center justify-center rounded-full hover:bg-surface-container-low transition-colors">
+            <div id="header-avatar" class="w-8 h-8 rounded-full bg-primary text-on-primary font-label-md text-label-md flex items-center justify-center font-bold shadow-xs">
+              S
+            </div>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Dynamic View -->
+    <main id="app-main" class="flex-1 flex flex-col relative w-full pt-20 pb-28 bg-surface"></main>
+
+    <!-- Bottom Tab Navigation -->
+    <nav aria-label="Navigasi Utama" class="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md z-50 pb-safe bg-surface/90 backdrop-blur-xl shadow-[0_-4px_16px_rgba(0,0,0,0.04)] border-t border-surface-container-high/50">
+      <div class="h-16 px-gutter-mobile flex items-center justify-around">
+        <button type="button" data-tab="beranda" class="nav-tab flex flex-col items-center justify-center min-w-[56px] h-12 transition-colors text-primary font-bold">
+          <span class="material-symbols-outlined text-[24px]">home</span>
+          <span class="font-label-sm text-label-sm mt-0.5">Beranda</span>
+        </button>
+
+        <button type="button" data-tab="mutasi" class="nav-tab flex flex-col items-center justify-center min-w-[56px] h-12 text-on-surface-variant hover:text-on-surface transition-colors">
+          <span class="material-symbols-outlined text-[24px]">receipt_long</span>
+          <span class="font-label-sm text-label-sm mt-0.5">Mutasi</span>
+        </button>
+
+        <button type="button" data-tab="catat" class="nav-tab flex flex-col items-center justify-center -mt-5 min-w-[56px]">
+          <div class="w-12 h-12 rounded-full bg-primary flex items-center justify-center text-on-primary shadow-[0_4px_12px_rgba(0,105,72,0.28)] hover:bg-primary-container transition-transform active:scale-95">
+            <span class="material-symbols-outlined text-[26px]">add</span>
+          </div>
+          <span class="font-label-sm text-label-sm text-on-surface-variant mt-1">Catat</span>
+        </button>
+
+        <button type="button" data-tab="budget" class="nav-tab flex flex-col items-center justify-center min-w-[56px] h-12 text-on-surface-variant hover:text-on-surface transition-colors">
+          <span class="material-symbols-outlined text-[24px]">account_balance_wallet</span>
+          <span class="font-label-sm text-label-sm mt-0.5">Budget</span>
+        </button>
+
+        <button type="button" data-tab="laporan" class="nav-tab flex flex-col items-center justify-center min-w-[56px] h-12 text-on-surface-variant hover:text-on-surface transition-colors">
+          <span class="material-symbols-outlined text-[24px]">insert_chart</span>
+          <span class="font-label-sm text-label-sm mt-0.5">Laporan</span>
+        </button>
+      </div>
+    </nav>
+  </div>
+
+  <!-- Modal & Toast Roots -->
+  <div id="modal-root" class="hidden fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-on-surface/40 backdrop-blur-xs p-0 sm:p-4"></div>
+  <div id="toast-root" class="fixed top-20 left-1/2 -translate-x-1/2 z-[70] pointer-events-none w-[90%] max-w-sm flex flex-col gap-2"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

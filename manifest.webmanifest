@@ -1,0 +1,47 @@
+{
+  "name": "Finora — Smart Personal Finance",
+  "short_name": "Finora",
+  "description": "Aplikasi pencatatan keuangan pribadi, arus kas harian, anggaran kategori, dan laporan spreadsheet.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#faf8ff",
+  "theme_color": "#006948",
+  "lang": "id",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Catat Transaksi",
+      "short_name": "Catat",
+      "url": "./#catat",
+      "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Riwayat Mutasi",
+      "short_name": "Mutasi",
+      "url": "./#mutasi",
+      "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}
