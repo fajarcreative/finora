@@ -57,117 +57,16 @@
         { id: 'ewallet', name: 'E-Wallet', subtitle: 'GoPay / OVO / DANA', icon: 'wallet', badge: 'Tersinkron', balance: 0 }
       ],
       budgets: {
-        makan: 1500000,
-        dapur: 1000000,
-        transport: 500000,
-        hiburan: 400000,
-        tagihan: 600000,
-        kesehatan: 400000,
-        pendidikan: 300000,
-        lainnya: 300000
+        makan: 0,
+        dapur: 0,
+        transport: 0,
+        hiburan: 0,
+        tagihan: 0,
+        kesehatan: 0,
+        pendidikan: 0,
+        lainnya: 0
       },
       transactions: []
-    };
-  }
-
-  function createDemoUserData(userName) {
-    return {
-      userName: userName || 'Pengguna',
-      hideBalance: false,
-      wallets: [
-        { id: 'tunai', name: 'Dompet Tunai', subtitle: 'Uang fisik di saku', icon: 'payments', badge: 'Aktif', balance: 1250000 },
-        { id: 'bca', name: 'Rekening BCA', subtitle: 'Gaji & Operasional', icon: 'account_balance', badge: 'Utama', balance: 11200000 },
-        { id: 'gopay', name: 'GoPay / OVO', subtitle: 'E-Wallet Transit', icon: 'wallet', badge: 'Tersinkron', balance: 2400000 }
-      ],
-      budgets: {
-        makan: 2000000,
-        dapur: 1000000,
-        transport: 600000,
-        hiburan: 500000,
-        tagihan: 600000,
-        kesehatan: 500000,
-        pendidikan: 400000,
-        lainnya: 400000
-      },
-      transactions: [
-        {
-          id: 'tx-1',
-          type: 'expense',
-          amount: 45000,
-          categoryId: 'makan',
-          walletId: 'tunai',
-          note: 'Makan Siang Nasi Padang + Es Teh',
-          tag: '#KebutuhanPokok',
-          date: daysAgoISO(0),
-          time: '12:45'
-        },
-        {
-          id: 'tx-2',
-          type: 'expense',
-          amount: 85000,
-          categoryId: 'dapur',
-          walletId: 'gopay',
-          note: 'Belanja Sayur & Bumbu Dapur',
-          tag: '#RutinHarian',
-          date: daysAgoISO(0),
-          time: '08:30'
-        },
-        {
-          id: 'tx-3',
-          type: 'income',
-          amount: 4500000,
-          categoryId: 'gaji',
-          walletId: 'bca',
-          note: 'Gaji Pokok & Bonus Bulanan',
-          tag: '#RutinHarian',
-          date: daysAgoISO(1),
-          time: '14:00'
-        },
-        {
-          id: 'tx-4',
-          type: 'expense',
-          amount: 35000,
-          categoryId: 'transport',
-          walletId: 'tunai',
-          note: 'Bensin Motor & Parkir Kantor',
-          tag: '#RutinHarian',
-          date: daysAgoISO(1),
-          time: '11:15'
-        },
-        {
-          id: 'tx-5',
-          type: 'expense',
-          amount: 420000,
-          categoryId: 'tagihan',
-          walletId: 'bca',
-          note: 'Tagihan Listrik & WiFi Rumah',
-          tag: '#KebutuhanPokok',
-          date: daysAgoISO(2),
-          time: '19:40'
-        },
-        {
-          id: 'tx-6',
-          type: 'expense',
-          amount: 165000,
-          categoryId: 'hiburan',
-          walletId: 'gopay',
-          note: 'Nonton Bioskop & Kopi Akhir Pekan',
-          tag: '#BisaDitekan',
-          date: daysAgoISO(3),
-          time: '16:20'
-        },
-        {
-          id: 'tx-7',
-          type: 'income',
-          amount: 4000000,
-          categoryId: 'freelance',
-          walletId: 'bca',
-          note: 'Pembayaran Proyek Desain UI',
-          tag: '#RutinHarian',
-          date: daysAgoISO(4),
-          time: '10:05'
-        }
-      ]
     };
   }
 
@@ -288,7 +187,7 @@
   let mutasiFilters = { search: '', type: 'all', categoryId: 'all', walletId: 'all' };
   let catatDraft = {
     type: 'expense',
-    amount: 45000,
+    amount: 0,
     categoryId: 'makan',
     walletId: 'tunai',
     date: toISODate(new Date()),
@@ -647,11 +546,6 @@
                 </div>
               </div>
 
-              <label class="flex items-center gap-2 text-body-sm text-on-surface-variant cursor-pointer select-none pt-0.5">
-                <input id="reg-demo" type="checkbox" class="w-4 h-4 accent-primary rounded">
-                <span>Isi data contoh transaksi untuk mencoba fitur</span>
-              </label>
-
               <button type="submit" class="w-full py-3 rounded-xl bg-primary hover:bg-primary-container text-on-primary font-label-lg font-bold shadow-sm active:scale-[0.99] transition-all flex items-center justify-center gap-2">
                 <span class="material-symbols-outlined text-[20px]">person_add</span>
                 <span>Daftar & Masuk</span>
@@ -746,7 +640,6 @@
         const email = normalizeEmail(document.getElementById('reg-email').value);
         const pw1 = document.getElementById('reg-password').value;
         const pw2 = document.getElementById('reg-password2').value;
-        const withDemo = document.getElementById('reg-demo').checked;
 
         if (!name) {
           showToast('Nama panggilan wajib diisi', 'error');
@@ -771,7 +664,7 @@
 
         const salt = generateSalt();
         const passwordHash = await hashPassword(pw1, salt);
-        const initialData = withDemo ? createDemoUserData(name) : createEmptyUserData(name);
+        const initialData = createEmptyUserData(name);
 
         vault.accounts[email] = {
           email,
@@ -1057,13 +950,15 @@
               <div class="h-24 w-full flex flex-col justify-end">
                 <div class="grid grid-cols-7 gap-2 items-end h-16 w-full px-1">
                   ${last7.map((d) => {
-                    const hPct = d.spent > 0 ? Math.max(14, Math.round((d.spent / maxSpent) * 100)) : 8;
+                    const hPct = d.spent > 0 ? Math.max(14, Math.round((d.spent / maxSpent) * 100)) : 6;
                     const isPeak = d.spent > 0 && d.spent === peakDay.spent;
-                    const barClass = d.isToday
-                      ? 'bg-primary shadow-sm'
-                      : isPeak
-                        ? 'bg-secondary shadow-sm'
-                        : 'bg-surface-container-highest group-hover:bg-primary';
+                    const barClass = d.spent === 0
+                      ? 'bg-surface-container-highest'
+                      : d.isToday
+                        ? 'bg-primary shadow-sm'
+                        : isPeak
+                          ? 'bg-secondary shadow-sm'
+                          : 'bg-surface-container-highest group-hover:bg-primary';
                     const textClass = d.isToday
                       ? 'text-primary font-bold'
                       : isPeak
@@ -1678,6 +1573,7 @@
         wallet.balance += tx.type === 'income' ? tx.amount : -tx.amount;
       }
       saveState();
+      catatDraft.amount = 0;
       catatDraft.note = '';
       catatDraft.receiptName = '';
       showToast('Transaksi berhasil disimpan!');
@@ -2328,10 +2224,7 @@
           </button>
         ` : ''}
 
-        <div class="grid grid-cols-2 gap-2">
-          <button id="acc-load-demo" type="button" class="py-2 px-3 rounded-xl bg-surface-container-low text-on-surface-variant font-label-sm font-semibold">Muat Data Contoh</button>
-          <button id="acc-clear-data" type="button" class="py-2 px-3 rounded-xl bg-surface-container-low text-secondary font-label-sm font-semibold">Kosongkan Data</button>
-        </div>
+        <button id="acc-clear-data" type="button" class="w-full py-2.5 px-3 rounded-xl bg-surface-container-low text-secondary font-label-sm font-semibold">Reset Semua Data ke Nol (Rp 0)</button>
 
         <!-- Logout -->
         <button id="acc-logout-btn" type="button" class="w-full py-3 rounded-xl bg-error-container text-on-error-container font-label-md font-bold flex items-center justify-center gap-2 hover:opacity-90">
@@ -2393,19 +2286,11 @@
       };
     }
 
-    document.getElementById('acc-load-demo').onclick = () => {
-      state = createDemoUserData(state.userName);
-      saveState();
-      closeModal();
-      showToast('Data contoh dimuat untuk akun ini');
-      render();
-    };
-
     document.getElementById('acc-clear-data').onclick = () => {
       state = createEmptyUserData(state.userName);
       saveState();
       closeModal();
-      showToast('Data akun dikosongkan');
+      showToast('Semua data direset ke nol (Rp 0)');
       render();
     };
 
