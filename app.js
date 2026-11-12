@@ -1,7 +1,10 @@
 (() => {
   'use strict';
 
-  const STORAGE_KEY = 'finora_state_v1';
+  const VAULT_KEY = 'finora_vault_v1';
+  const TAB_SESSION_KEY = 'finora_tab_session_v1';
+  const PWA_SESSION_KEY = 'finora_pwa_session_v1';
+  const INSTALLED_KEY = 'finora_installed_v1';
 
   const EXPENSE_CATEGORIES = [
     { id: 'makan', name: 'Makan & Minum', icon: 'restaurant' },
@@ -44,11 +47,33 @@
     return toISODate(d);
   }
 
-  function createSeedState() {
+  function createEmptyUserData(userName) {
     return {
-      userName: 'Sarah',
+      userName: userName || 'Pengguna',
       hideBalance: false,
-      autoBackup: true,
+      wallets: [
+        { id: 'tunai', name: 'Dompet Tunai', subtitle: 'Uang fisik di saku', icon: 'payments', badge: 'Aktif', balance: 0 },
+        { id: 'bca', name: 'Rekening Bank', subtitle: 'Gaji & Operasional', icon: 'account_balance', badge: 'Utama', balance: 0 },
+        { id: 'ewallet', name: 'E-Wallet', subtitle: 'GoPay / OVO / DANA', icon: 'wallet', badge: 'Tersinkron', balance: 0 }
+      ],
+      budgets: {
+        makan: 1500000,
+        dapur: 1000000,
+        transport: 500000,
+        hiburan: 400000,
+        tagihan: 600000,
+        kesehatan: 400000,
+        pendidikan: 300000,
+        lainnya: 300000
+      },
+      transactions: []
+    };
+  }
+
+  function createDemoUserData(userName) {
+    return {
+      userName: userName || 'Pengguna',
+      hideBalance: false,
       wallets: [
         { id: 'tunai', name: 'Dompet Tunai', subtitle: 'Uang fisik di saku', icon: 'payments', badge: 'Aktif', balance: 1250000 },
         { id: 'bca', name: 'Rekening BCA', subtitle: 'Gaji & Operasional', icon: 'account_balance', badge: 'Utama', balance: 11200000 },
@@ -141,80 +166,157 @@
           tag: '#RutinHarian',
           date: daysAgoISO(4),
           time: '10:05'
-        },
-        {
-          id: 'tx-8',
-          type: 'expense',
-          amount: 210000,
-          categoryId: 'dapur',
-          walletId: 'gopay',
-          note: 'Belanja Mingguan Kebutuhan Rumah',
-          tag: '#KebutuhanPokok',
-          date: daysAgoISO(5),
-          time: '17:50'
-        },
-        {
-          id: 'tx-9',
-          type: 'expense',
-          amount: 120000,
-          categoryId: 'makan',
-          walletId: 'tunai',
-          note: 'Makan Malam Keluarga',
-          tag: '#RutinHarian',
-          date: daysAgoISO(6),
-          time: '20:10'
         }
       ]
     };
   }
 
-  function loadState() {
+  function loadVault() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return createSeedState();
+      const raw = localStorage.getItem(VAULT_KEY);
+      if (!raw) return { accounts: {} };
       const parsed = JSON.parse(raw);
-      if (!parsed || !Array.isArray(parsed.wallets) || !Array.isArray(parsed.transactions)) {
-        return createSeedState();
-      }
+      if (!parsed || typeof parsed.accounts !== 'object') return { accounts: {} };
       return parsed;
     } catch {
-      return createSeedState();
+      return { accounts: {} };
     }
   }
 
-  function saveState() {
+  function saveVault() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      localStorage.setItem(VAULT_KEY, JSON.stringify(vault));
     } catch {
-      // Ignore storage quota errors cleanly
+      // Ignore storage quota errors
     }
   }
 
-  let state = loadState();
+  function generateSalt() {
+    if (window.crypto && window.crypto.getRandomValues) {
+      const arr = new Uint8Array(12);
+      window.crypto.getRandomValues(arr);
+      return Array.from(arr, (b) => b.toString(16).padStart(2, '0')).join('');
+    }
+    return Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
+
+  async function hashPassword(password, salt) {
+    const input = `${salt}:${password}`;
+    if (window.crypto && window.crypto.subtle) {
+      const encoded = new TextEncoder().encode(input);
+      const buf = await window.crypto.subtle.digest('SHA-256', encoded);
+      return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
+    }
+    // Lightweight fallback for non-HTTPS origins
+    let h1 = 0x811c9dc5;
+    let h2 = 0x01000193;
+    for (let i = 0; i < input.length; i++) {
+      const c = input.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 16777619);
+      h2 = Math.imul(h2 ^ (c + i), 2246822519);
+    }
+    return (h1 >>> 0).toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0');
+  }
+
+  function normalizeEmail(email) {
+    return String(email || '').trim().toLowerCase();
+  }
+
+  function isValidEmail(email) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  }
+
+  function isStandaloneMode() {
+    return (
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.matchMedia('(display-mode: minimal-ui)').matches ||
+      window.navigator.standalone === true
+    );
+  }
+
+  function isAppInstalled() {
+    return isStandaloneMode() || localStorage.getItem(INSTALLED_KEY) === '1';
+  }
+
+  function getActiveSessionEmail() {
+    try {
+      const tabEmail = normalizeEmail(sessionStorage.getItem(TAB_SESSION_KEY));
+      if (tabEmail && vault.accounts[tabEmail]) return tabEmail;
+      if (isStandaloneMode()) {
+        const pwaEmail = normalizeEmail(localStorage.getItem(PWA_SESSION_KEY));
+        if (pwaEmail && vault.accounts[pwaEmail]) return pwaEmail;
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+    return '';
+  }
+
+  function setActiveSession(email, rememberInPwa) {
+    const clean = normalizeEmail(email);
+    currentEmail = clean;
+    try {
+      sessionStorage.setItem(TAB_SESSION_KEY, clean);
+      if (isStandaloneMode() && rememberInPwa) {
+        localStorage.setItem(PWA_SESSION_KEY, clean);
+      } else {
+        localStorage.removeItem(PWA_SESSION_KEY);
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  function clearActiveSession() {
+    currentEmail = '';
+    try {
+      sessionStorage.removeItem(TAB_SESSION_KEY);
+      localStorage.removeItem(PWA_SESSION_KEY);
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  let vault = loadVault();
+  let currentEmail = getActiveSessionEmail();
+  let state = currentEmail && vault.accounts[currentEmail]
+    ? vault.accounts[currentEmail].data
+    : null;
+
   let activeTab = getInitialTab();
+  let authMode = 'login'; // 'login' | 'register'
   let mutasiFilters = { search: '', type: 'all', categoryId: 'all', walletId: 'all' };
   let catatDraft = {
     type: 'expense',
     amount: 45000,
     categoryId: 'makan',
-    walletId: state.wallets[0]?.id || 'tunai',
+    walletId: 'tunai',
     date: toISODate(new Date()),
     time: new Date().toTimeString().slice(0, 5),
     note: '',
     tag: '#KebutuhanPokok',
     receiptName: ''
   };
-  let reportRange = 'weekly'; // weekly | monthly | all
+  let reportRange = 'weekly';
   let reportOffset = 0;
   let deferredInstallPrompt = null;
   let installBannerDismissed = false;
 
+  const authScreenEl = document.getElementById('auth-screen');
+  const appShellEl = document.getElementById('app-shell');
   const mainEl = document.getElementById('app-main');
   const subtitleEl = document.getElementById('header-subtitle');
   const avatarEl = document.getElementById('header-avatar');
   const modalRoot = document.getElementById('modal-root');
   const toastRoot = document.getElementById('toast-root');
   const headerInstallBtn = document.getElementById('header-install-btn');
+
+  function saveState() {
+    if (!currentEmail || !vault.accounts[currentEmail] || !state) return;
+    vault.accounts[currentEmail].data = state;
+    vault.accounts[currentEmail].name = state.userName || vault.accounts[currentEmail].name;
+    saveVault();
+  }
 
   function getInitialTab() {
     const h = window.location.hash.replace('#', '');
@@ -305,7 +407,7 @@
     setTimeout(() => {
       el.classList.add('opacity-0', '-translate-y-2');
       setTimeout(() => el.remove(), 220);
-    }, 2600);
+    }, 2800);
   }
 
   function closeModal() {
@@ -315,7 +417,7 @@
 
   function openModal(innerHTML) {
     modalRoot.innerHTML = `
-      <div class="w-full max-w-md bg-surface rounded-t-2xl sm:rounded-2xl p-5 shadow-2xl max-h-[85vh] overflow-y-auto animate-fade-in">
+      <div class="w-full max-w-md bg-surface rounded-t-2xl sm:rounded-2xl p-5 shadow-2xl max-h-[85vh] overflow-y-auto">
         ${innerHTML}
       </div>
     `;
@@ -328,39 +430,34 @@
   function isIosBrowser() {
     const ua = navigator.userAgent || '';
     const isIos = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-    return isIos && !isStandalone;
-  }
-
-  function isStandaloneMode() {
-    return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    return isIos && !isStandaloneMode();
   }
 
   function updateInstallButtonVisibility() {
     if (!headerInstallBtn) return;
-    if (isStandaloneMode()) {
+    if (isAppInstalled()) {
       headerInstallBtn.classList.add('hidden');
       headerInstallBtn.classList.remove('flex');
       return;
     }
-    if (deferredInstallPrompt || isIosBrowser()) {
-      headerInstallBtn.classList.remove('hidden');
-      headerInstallBtn.classList.add('flex');
-    } else {
-      // Still allow opening install guide on desktop/other mobile browsers
-      headerInstallBtn.classList.remove('hidden');
-      headerInstallBtn.classList.add('flex');
-    }
+    headerInstallBtn.classList.remove('hidden');
+    headerInstallBtn.classList.add('flex');
   }
 
   async function triggerInstall() {
+    if (isAppInstalled()) {
+      updateInstallButtonVisibility();
+      return;
+    }
+
     if (deferredInstallPrompt) {
       deferredInstallPrompt.prompt();
       const choice = await deferredInstallPrompt.userChoice;
       if (choice.outcome === 'accepted') {
-        showToast('Finora berhasil dipasang ke layar utama!');
+        localStorage.setItem(INSTALLED_KEY, '1');
         deferredInstallPrompt = null;
         updateInstallButtonVisibility();
+        showToast('Finora berhasil dipasang di perangkat!');
         render();
       }
       return;
@@ -373,7 +470,7 @@
           <img src="./icons/icon-192.png" alt="Finora" class="w-10 h-10 rounded-xl shadow-xs">
           <div>
             <h3 class="font-headline-sm text-headline-sm text-on-surface">Pasang Finora di HP</h3>
-            <p class="font-body-sm text-body-sm text-on-surface-variant">Gunakan seperti aplikasi native tanpa app store</p>
+            <p class="font-body-sm text-body-sm text-on-surface-variant">Gunakan seperti aplikasi native tanpa App Store</p>
           </div>
         </div>
         <button id="modal-close-btn" type="button" class="w-8 h-8 rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant">
@@ -385,8 +482,8 @@
           <div class="p-3 rounded-xl bg-primary-fixed/30 text-on-primary-fixed space-y-1.5">
             <p class="font-semibold text-on-surface">Cara Pasang di iPhone / iPad (Safari):</p>
             <ol class="list-decimal pl-4 space-y-1">
-              <li>Ketuk tombol <strong>Bagikan (Share)</strong> <span class="material-symbols-outlined text-[14px] align-middle">ios_share</span> di bawah/atas Safari.</li>
-              <li>Gulir ke bawah dan pilih <strong>Tambah ke Layar Utama (Add to Home Screen)</strong>.</li>
+              <li>Ketuk tombol <strong>Bagikan (Share)</strong> di Safari.</li>
+              <li>Pilih <strong>Tambah ke Layar Utama (Add to Home Screen)</strong>.</li>
               <li>Ketuk <strong>Tambah (Add)</strong> di pojok kanan atas.</li>
             </ol>
           </div>
@@ -408,12 +505,371 @@
           </div>
         `}
       </div>
-      <button id="modal-ok-btn" type="button" class="mt-4 w-full py-2.5 rounded-xl bg-primary text-on-primary font-label-md font-semibold">Mengerti</button>
+      <div class="mt-4 flex flex-col gap-2">
+        <button id="modal-ok-btn" type="button" class="w-full py-2.5 rounded-xl bg-primary text-on-primary font-label-md font-semibold">Mengerti</button>
+        ${ios ? `
+          <button id="modal-mark-installed" type="button" class="w-full py-2 rounded-xl bg-surface-container text-on-surface-variant font-label-sm font-semibold">Saya Sudah Pasang di Layar Utama</button>
+        ` : ''}
+      </div>
     `);
     document.getElementById('modal-close-btn').onclick = closeModal;
     document.getElementById('modal-ok-btn').onclick = closeModal;
+    const markBtn = document.getElementById('modal-mark-installed');
+    if (markBtn) {
+      markBtn.onclick = () => {
+        localStorage.setItem(INSTALLED_KEY, '1');
+        updateInstallButtonVisibility();
+        closeModal();
+        render();
+      };
+    }
   }
 
+  // ==================== AUTH SCREEN ====================
+  function renderAuthScreen() {
+    appShellEl.classList.add('hidden');
+    authScreenEl.classList.remove('hidden');
+
+    const savedEmails = Object.keys(vault.accounts || {});
+    const installed = isAppInstalled();
+
+    authScreenEl.innerHTML = `
+      <div class="flex flex-col flex-1 justify-center py-6 space-y-6">
+        <!-- Brand Hero -->
+        <div class="flex flex-col items-center text-center space-y-2">
+          <img src="./icons/icon-192.png" alt="Finora Logo" class="w-16 h-16 rounded-2xl shadow-md">
+          <div>
+            <h1 class="font-headline-lg text-headline-lg text-primary font-bold tracking-tight">Finora</h1>
+            <p class="font-body-sm text-body-sm text-on-surface-variant">Smart Personal Finance • Aman dengan Email & Password</p>
+          </div>
+          ${!installed ? `
+            <button id="auth-install-btn" type="button" class="mt-1 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-primary-fixed text-on-primary-fixed font-label-sm text-label-sm font-bold shadow-xs hover:opacity-90">
+              <span class="material-symbols-outlined text-[16px]">install_mobile</span>
+              <span>Pasang Aplikasi di HP</span>
+            </button>
+          ` : ''}
+        </div>
+
+        <!-- Auth Card -->
+        <div class="bg-surface-container-lowest rounded-2xl p-5 shadow-md space-y-4">
+          <div class="p-1 bg-surface-container rounded-xl flex items-center">
+            <button id="auth-tab-login" type="button" class="flex-1 py-2 px-3 rounded-lg ${authMode === 'login' ? 'bg-surface-container-lowest text-primary shadow-sm' : 'text-on-surface-variant'} font-label-md text-label-md font-bold transition-all">
+              Masuk Akun
+            </button>
+            <button id="auth-tab-register" type="button" class="flex-1 py-2 px-3 rounded-lg ${authMode === 'register' ? 'bg-surface-container-lowest text-primary shadow-sm' : 'text-on-surface-variant'} font-label-md text-label-md font-bold transition-all">
+              Buat Akun Baru
+            </button>
+          </div>
+
+          ${authMode === 'login' ? `
+            <form id="login-form" class="space-y-3.5" novalidate>
+              <div>
+                <label class="font-label-sm text-label-sm text-on-surface-variant" for="login-email">Email</label>
+                <div class="relative mt-1 flex items-center">
+                  <span class="material-symbols-outlined text-[19px] text-outline absolute left-3">mail</span>
+                  <input id="login-email" type="email" autocomplete="email" placeholder="nama@email.com" value="${esc(savedEmails[0] || '')}" class="w-full pl-10 pr-3 py-2.5 rounded-xl bg-surface-container-low text-on-surface font-body-md focus:bg-surface-container-lowest focus:outline-none focus:ring-2 focus:ring-primary/30" required>
+                </div>
+              </div>
+
+              <div>
+                <label class="font-label-sm text-label-sm text-on-surface-variant" for="login-password">Password</label>
+                <div class="relative mt-1 flex items-center">
+                  <span class="material-symbols-outlined text-[19px] text-outline absolute left-3">lock</span>
+                  <input id="login-password" type="password" autocomplete="current-password" placeholder="Masukkan password" class="w-full pl-10 pr-10 py-2.5 rounded-xl bg-surface-container-low text-on-surface font-body-md focus:bg-surface-container-lowest focus:outline-none focus:ring-2 focus:ring-primary/30" required>
+                  <button data-toggle-pw="login-password" type="button" aria-label="Lihat password" class="absolute right-2.5 text-on-surface-variant p-1">
+                    <span class="material-symbols-outlined text-[19px]">visibility</span>
+                  </button>
+                </div>
+              </div>
+
+              ${isStandaloneMode() ? `
+                <label class="flex items-center gap-2 text-body-sm text-on-surface-variant cursor-pointer select-none">
+                  <input id="login-remember" type="checkbox" checked class="w-4 h-4 accent-primary rounded">
+                  <span>Tetap masuk di aplikasi terpasang</span>
+                </label>
+              ` : ''}
+
+              <button type="submit" class="w-full py-3 rounded-xl bg-primary hover:bg-primary-container text-on-primary font-label-lg font-bold shadow-sm active:scale-[0.99] transition-all flex items-center justify-center gap-2">
+                <span class="material-symbols-outlined text-[20px]">login</span>
+                <span>Masuk ke Finora</span>
+              </button>
+            </form>
+
+            ${savedEmails.length > 0 ? `
+              <div class="pt-2 border-t border-surface-container">
+                <p class="font-label-sm text-label-sm text-on-surface-variant mb-2">Akun tersimpan di perangkat ini:</p>
+                <div class="flex flex-wrap gap-1.5">
+                  ${savedEmails.map((em) => `
+                    <button data-pick-email="${esc(em)}" type="button" class="px-2.5 py-1 rounded-full bg-surface-container text-on-surface font-label-sm text-label-sm hover:bg-primary-fixed transition-colors">
+                      ${esc(em)}
+                    </button>
+                  `).join('')}
+                </div>
+              </div>
+            ` : ''}
+          ` : `
+            <form id="register-form" class="space-y-3" novalidate>
+              <div>
+                <label class="font-label-sm text-label-sm text-on-surface-variant" for="reg-name">Nama Panggilan</label>
+                <div class="relative mt-1 flex items-center">
+                  <span class="material-symbols-outlined text-[19px] text-outline absolute left-3">person</span>
+                  <input id="reg-name" type="text" autocomplete="name" placeholder="Contoh: Fajar" class="w-full pl-10 pr-3 py-2.5 rounded-xl bg-surface-container-low text-on-surface font-body-md focus:bg-surface-container-lowest focus:outline-none focus:ring-2 focus:ring-primary/30" required>
+                </div>
+              </div>
+
+              <div>
+                <label class="font-label-sm text-label-sm text-on-surface-variant" for="reg-email">Email</label>
+                <div class="relative mt-1 flex items-center">
+                  <span class="material-symbols-outlined text-[19px] text-outline absolute left-3">mail</span>
+                  <input id="reg-email" type="email" autocomplete="email" placeholder="nama@email.com" class="w-full pl-10 pr-3 py-2.5 rounded-xl bg-surface-container-low text-on-surface font-body-md focus:bg-surface-container-lowest focus:outline-none focus:ring-2 focus:ring-primary/30" required>
+                </div>
+              </div>
+
+              <div>
+                <label class="font-label-sm text-label-sm text-on-surface-variant" for="reg-password">Password (min. 6 karakter)</label>
+                <div class="relative mt-1 flex items-center">
+                  <span class="material-symbols-outlined text-[19px] text-outline absolute left-3">lock</span>
+                  <input id="reg-password" type="password" autocomplete="new-password" placeholder="Buat password aman" class="w-full pl-10 pr-10 py-2.5 rounded-xl bg-surface-container-low text-on-surface font-body-md focus:bg-surface-container-lowest focus:outline-none focus:ring-2 focus:ring-primary/30" required>
+                  <button data-toggle-pw="reg-password" type="button" aria-label="Lihat password" class="absolute right-2.5 text-on-surface-variant p-1">
+                    <span class="material-symbols-outlined text-[19px]">visibility</span>
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label class="font-label-sm text-label-sm text-on-surface-variant" for="reg-password2">Konfirmasi Password</label>
+                <div class="relative mt-1 flex items-center">
+                  <span class="material-symbols-outlined text-[19px] text-outline absolute left-3">verified_user</span>
+                  <input id="reg-password2" type="password" autocomplete="new-password" placeholder="Ulangi password" class="w-full pl-10 pr-10 py-2.5 rounded-xl bg-surface-container-low text-on-surface font-body-md focus:bg-surface-container-lowest focus:outline-none focus:ring-2 focus:ring-primary/30" required>
+                  <button data-toggle-pw="reg-password2" type="button" aria-label="Lihat password" class="absolute right-2.5 text-on-surface-variant p-1">
+                    <span class="material-symbols-outlined text-[19px]">visibility</span>
+                  </button>
+                </div>
+              </div>
+
+              <label class="flex items-center gap-2 text-body-sm text-on-surface-variant cursor-pointer select-none pt-0.5">
+                <input id="reg-demo" type="checkbox" class="w-4 h-4 accent-primary rounded">
+                <span>Isi data contoh transaksi untuk mencoba fitur</span>
+              </label>
+
+              <button type="submit" class="w-full py-3 rounded-xl bg-primary hover:bg-primary-container text-on-primary font-label-lg font-bold shadow-sm active:scale-[0.99] transition-all flex items-center justify-center gap-2">
+                <span class="material-symbols-outlined text-[20px]">person_add</span>
+                <span>Daftar & Masuk</span>
+              </button>
+            </form>
+          `}
+
+          <div class="pt-1 flex items-center justify-between text-label-sm text-on-surface-variant">
+            <span class="flex items-center gap-1">
+              <span class="material-symbols-outlined text-[15px] text-primary">shield_lock</span>
+              Data tersimpan per email di perangkat
+            </span>
+            <button id="auth-restore-json" type="button" class="text-primary font-bold hover:underline">Pulihkan Backup</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="text-center font-label-sm text-label-sm text-outline pb-2">
+        Finora PWA • Keamanan Akun Lokal
+      </p>
+    `;
+
+    const authInstallBtn = document.getElementById('auth-install-btn');
+    if (authInstallBtn) authInstallBtn.onclick = triggerInstall;
+
+    document.getElementById('auth-tab-login').onclick = () => {
+      authMode = 'login';
+      renderAuthScreen();
+    };
+    document.getElementById('auth-tab-register').onclick = () => {
+      authMode = 'register';
+      renderAuthScreen();
+    };
+
+    document.querySelectorAll('[data-toggle-pw]').forEach((btn) => {
+      btn.onclick = () => {
+        const inp = document.getElementById(btn.dataset.togglePw);
+        if (!inp) return;
+        const isPw = inp.type === 'password';
+        inp.type = isPw ? 'text' : 'password';
+        btn.querySelector('span').textContent = isPw ? 'visibility_off' : 'visibility';
+      };
+    });
+
+    document.querySelectorAll('[data-pick-email]').forEach((btn) => {
+      btn.onclick = () => {
+        const inp = document.getElementById('login-email');
+        if (inp) inp.value = btn.dataset.pickEmail;
+        const pw = document.getElementById('login-password');
+        if (pw) pw.focus();
+      };
+    });
+
+    document.getElementById('auth-restore-json').onclick = () => openRestoreBackupModal(true);
+
+    const loginForm = document.getElementById('login-form');
+    if (loginForm) {
+      loginForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const email = normalizeEmail(document.getElementById('login-email').value);
+        const password = document.getElementById('login-password').value;
+        const remember = document.getElementById('login-remember')?.checked ?? true;
+
+        if (!isValidEmail(email)) {
+          showToast('Masukkan alamat email yang valid', 'error');
+          return;
+        }
+        const account = vault.accounts[email];
+        if (!account) {
+          showToast('Email belum terdaftar di perangkat ini. Buat akun baru atau pulihkan backup.', 'error');
+          return;
+        }
+        const attemptHash = await hashPassword(password, account.salt);
+        if (attemptHash !== account.passwordHash) {
+          showToast('Password salah. Silakan periksa kembali.', 'error');
+          return;
+        }
+
+        setActiveSession(email, remember);
+        state = account.data;
+        catatDraft.walletId = state.wallets[0]?.id || 'tunai';
+        showToast(`Selamat datang kembali, ${state.userName}!`);
+        render();
+      };
+    }
+
+    const regForm = document.getElementById('register-form');
+    if (regForm) {
+      regForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const name = document.getElementById('reg-name').value.trim();
+        const email = normalizeEmail(document.getElementById('reg-email').value);
+        const pw1 = document.getElementById('reg-password').value;
+        const pw2 = document.getElementById('reg-password2').value;
+        const withDemo = document.getElementById('reg-demo').checked;
+
+        if (!name) {
+          showToast('Nama panggilan wajib diisi', 'error');
+          return;
+        }
+        if (!isValidEmail(email)) {
+          showToast('Masukkan format email yang benar', 'error');
+          return;
+        }
+        if (vault.accounts[email]) {
+          showToast('Email ini sudah terdaftar. Silakan masuk melalui tab Masuk Akun.', 'error');
+          return;
+        }
+        if (pw1.length < 6) {
+          showToast('Password minimal 6 karakter', 'error');
+          return;
+        }
+        if (pw1 !== pw2) {
+          showToast('Konfirmasi password tidak cocok', 'error');
+          return;
+        }
+
+        const salt = generateSalt();
+        const passwordHash = await hashPassword(pw1, salt);
+        const initialData = withDemo ? createDemoUserData(name) : createEmptyUserData(name);
+
+        vault.accounts[email] = {
+          email,
+          name,
+          salt,
+          passwordHash,
+          createdAt: new Date().toISOString(),
+          data: initialData
+        };
+        saveVault();
+
+        setActiveSession(email, true);
+        state = vault.accounts[email].data;
+        catatDraft.walletId = state.wallets[0]?.id || 'tunai';
+        showToast(`Akun ${email} berhasil dibuat!`);
+        render();
+      };
+    }
+  }
+
+  // ==================== BACKUP & RESTORE ====================
+  function exportAccountBackup() {
+    if (!currentEmail || !vault.accounts[currentEmail]) return;
+    const account = vault.accounts[currentEmail];
+    const payload = {
+      app: 'finora-pwa',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      account: {
+        email: account.email,
+        name: account.name,
+        salt: account.salt,
+        passwordHash: account.passwordHash,
+        createdAt: account.createdAt,
+        data: state
+      }
+    };
+    const safeName = currentEmail.replace(/[^a-z0-9]/gi, '_');
+    const filename = `Finora_Backup_${safeName}_${toISODate(new Date())}.json`;
+    triggerFileDownload(filename, JSON.stringify(payload, null, 2), 'application/json');
+    showToast('Backup akun (.json) berhasil diunduh!');
+  }
+
+  function openRestoreBackupModal(fromAuth = false) {
+    openModal(`
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-headline-sm text-headline-sm text-on-surface">Pulihkan Backup Akun</h3>
+        <button id="modal-close-btn" type="button" class="w-8 h-8 rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant">
+          <span class="material-symbols-outlined text-[18px]">close</span>
+        </button>
+      </div>
+      <p class="font-body-sm text-body-sm text-on-surface-variant mb-3">
+        Pilih file backup <code>.json</code> yang pernah diekspor dari Finora untuk memulihkan email beserta seluruh transaksi, dompet, dan budget Anda.
+      </p>
+      <label class="w-full p-5 rounded-xl bg-surface-container-low flex flex-col items-center justify-center text-center cursor-pointer hover:bg-surface-container transition-colors">
+        <input id="restore-file-input" type="file" accept=".json,application/json" class="hidden">
+        <span class="material-symbols-outlined text-[30px] text-primary mb-1">upload_file</span>
+        <span class="font-label-md text-label-md text-on-surface font-semibold">Pilih File Backup (.json)</span>
+      </label>
+    `);
+    document.getElementById('modal-close-btn').onclick = closeModal;
+    document.getElementById('restore-file-input').onchange = async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        const acc = parsed?.account;
+        if (!acc || !acc.email || !acc.passwordHash || !acc.data) {
+          showToast('Format file backup tidak valid', 'error');
+          return;
+        }
+        const email = normalizeEmail(acc.email);
+        vault.accounts[email] = {
+          email,
+          name: acc.name || acc.data.userName || 'Pengguna',
+          salt: acc.salt || generateSalt(),
+          passwordHash: acc.passwordHash,
+          createdAt: acc.createdAt || new Date().toISOString(),
+          data: acc.data
+        };
+        saveVault();
+        closeModal();
+        showToast(`Data akun ${email} dipulihkan! Silakan masuk dengan password Anda.`);
+        if (fromAuth) {
+          authMode = 'login';
+          renderAuthScreen();
+        } else if (email === currentEmail) {
+          state = vault.accounts[email].data;
+          render();
+        }
+      } catch {
+        showToast('Gagal membaca file backup', 'error');
+      }
+    };
+  }
+
+  // ==================== APP SHELL & TABS ====================
   function setActiveTab(tab, options = {}) {
     if (!['beranda', 'mutasi', 'catat', 'budget', 'laporan'].includes(tab)) return;
     activeTab = tab;
@@ -430,24 +886,21 @@
 
   function updateNavChrome() {
     subtitleEl.textContent = SUBTITLES[activeTab] || 'Smart Personal Finance';
-    avatarEl.textContent = (state.userName || 'S').trim().charAt(0).toUpperCase() || 'S';
+    avatarEl.textContent = (state.userName || currentEmail || 'U').trim().charAt(0).toUpperCase() || 'U';
+    updateInstallButtonVisibility();
 
     document.querySelectorAll('.nav-tab').forEach((btn) => {
       const tab = btn.dataset.tab;
       if (tab === 'catat') {
         const label = btn.querySelector('span:last-child');
-        if (activeTab === 'catat') {
-          label.className = 'font-label-sm text-label-sm text-primary font-bold mt-1';
-        } else {
-          label.className = 'font-label-sm text-label-sm text-on-surface-variant mt-1';
-        }
+        label.className = activeTab === 'catat'
+          ? 'font-label-sm text-label-sm text-primary font-bold mt-1'
+          : 'font-label-sm text-label-sm text-on-surface-variant mt-1';
         return;
       }
-      if (tab === activeTab) {
-        btn.className = 'nav-tab flex flex-col items-center justify-center min-w-[56px] h-12 transition-colors text-primary font-bold';
-      } else {
-        btn.className = 'nav-tab flex flex-col items-center justify-center min-w-[56px] h-12 text-on-surface-variant hover:text-on-surface transition-colors';
-      }
+      btn.className = tab === activeTab
+        ? 'nav-tab flex flex-col items-center justify-center min-w-[56px] h-12 transition-colors text-primary font-bold'
+        : 'nav-tab flex flex-col items-center justify-center min-w-[56px] h-12 text-on-surface-variant hover:text-on-surface transition-colors';
     });
   }
 
@@ -458,7 +911,6 @@
     const totalOut = monthTxs.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
     const recent = sortedTransactions().slice(0, 4);
 
-    // Build last 7 days spending trend
     const dayNames = ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'];
     const last7 = [];
     for (let i = 6; i >= 0; i--) {
@@ -468,17 +920,13 @@
       const spent = state.transactions
         .filter((t) => t.type === 'expense' && t.date === iso)
         .reduce((s, t) => s + t.amount, 0);
-      last7.push({
-        label: dayNames[d.getDay()],
-        spent,
-        isToday: i === 0
-      });
+      last7.push({ label: dayNames[d.getDay()], spent, isToday: i === 0 });
     }
     const maxSpent = Math.max(...last7.map((x) => x.spent), 1);
     const avgSpent = Math.round(last7.reduce((s, x) => s + x.spent, 0) / 7);
     const peakDay = last7.reduce((best, cur) => (cur.spent > best.spent ? cur : best), last7[0]);
 
-    const showInstallBanner = !isStandaloneMode() && !installBannerDismissed;
+    const showInstallBanner = !isAppInstalled() && !installBannerDismissed;
 
     mainEl.innerHTML = `
       <div class="flex flex-col w-full pb-4 space-y-space-md">
@@ -508,14 +956,14 @@
 
         <!-- Greeting Header Banner -->
         <div class="px-margin-mobile flex items-center justify-between">
-          <div class="flex flex-col">
+          <div class="flex flex-col min-w-0 pr-2">
             <div class="flex items-center gap-space-xs">
-              <span class="font-headline-md text-headline-md text-on-surface">Halo, ${esc(state.userName)}!</span>
+              <span class="font-headline-md text-headline-md text-on-surface truncate">Halo, ${esc(state.userName)}!</span>
               <span class="text-[20px]">👋</span>
             </div>
-            <span class="font-body-sm text-body-sm text-on-surface-variant">${esc(formatTodayBanner())} • Pantau arus kasmu</span>
+            <span class="font-body-sm text-body-sm text-on-surface-variant truncate">${esc(formatTodayBanner())} • ${esc(currentEmail)}</span>
           </div>
-          <div class="w-10 h-10 rounded-full bg-primary-fixed flex items-center justify-center text-on-primary-fixed shadow-sm">
+          <div class="w-10 h-10 rounded-full bg-primary-fixed flex items-center justify-center text-on-primary-fixed shadow-sm shrink-0">
             <span class="material-symbols-outlined text-[20px]" style="font-variation-settings: 'FILL' 1;">eco</span>
           </div>
         </div>
@@ -650,7 +1098,7 @@
             </div>
             <div class="flex-1 flex flex-col">
               <p class="font-body-sm text-body-sm text-on-surface leading-tight">
-                <strong class="font-bold text-primary">Surplus bulan ini: Rp ${formatRp(totalIn - totalOut)}</strong>. Pantau riwayat dan unduh laporan kapan saja.
+                <strong class="font-bold text-primary">Selisih bulan ini: ${totalIn - totalOut >= 0 ? '+' : '-'}Rp ${formatRp(totalIn - totalOut)}</strong>. Data tersimpan rapi untuk akun ${esc(currentEmail)}.
               </p>
               <button id="tip-download-btn" type="button" class="font-label-sm text-label-sm text-tertiary text-left mt-1 font-bold hover:underline inline-flex items-center gap-0.5">
                 Unduh Laporan Mingguan <span class="material-symbols-outlined text-[14px]">chevron_right</span>
@@ -672,7 +1120,13 @@
             </button>
           </div>
           <div class="flex flex-col space-y-2">
-            ${recent.map((tx) => {
+            ${recent.length === 0 ? `
+              <div class="bg-surface-container-lowest p-6 rounded-xl text-center shadow-sm flex flex-col items-center gap-2">
+                <span class="material-symbols-outlined text-[32px] text-primary">add_task</span>
+                <p class="font-label-lg text-on-surface">Belum ada transaksi</p>
+                <p class="font-body-sm text-on-surface-variant">Ketuk tombol <strong>+ Catat</strong> di bawah untuk mulai mencatat pemasukan atau pengeluaran.</p>
+              </div>
+            ` : recent.map((tx) => {
               const cat = getCategory(tx.categoryId);
               const wal = getWallet(tx.walletId);
               const isInc = tx.type === 'income';
@@ -753,7 +1207,6 @@
     const totalOut = filtered.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
     const net = totalIn - totalOut;
 
-    // Group by date
     const groups = new Map();
     for (const tx of filtered) {
       const k = tx.date || 'Lainnya';
@@ -779,7 +1232,6 @@
           </div>
         </div>
 
-        <!-- Search & Filter -->
         <div class="flex flex-col gap-space-sm">
           <div class="flex items-center gap-space-xs">
             <div class="relative flex-1 flex items-center bg-surface-container-lowest rounded-xl shadow-sm">
@@ -793,7 +1245,6 @@
             </div>
           </div>
 
-          <!-- Type Chips + Dropdowns -->
           <div class="flex items-center gap-space-xs overflow-x-auto no-scrollbar py-0.5">
             <button data-type-filter="all" type="button" class="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full ${mutasiFilters.type === 'all' ? 'bg-primary text-on-primary' : 'bg-surface-container-lowest text-on-surface-variant'} font-label-md text-label-md whitespace-nowrap shadow-sm">
               <span class="material-symbols-outlined text-[16px]">checklist</span>
@@ -818,7 +1269,6 @@
           </div>
         </div>
 
-        <!-- Summary Strip -->
         <div class="flex flex-col bg-surface-container-lowest rounded-xl p-space-md shadow-sm gap-space-sm">
           <div class="flex items-center justify-between">
             <span class="font-label-md text-label-md text-on-surface-variant flex items-center gap-1.5">
@@ -842,13 +1292,12 @@
           </div>
         </div>
 
-        <!-- Grouped List -->
         <div class="flex flex-col gap-space-md">
           ${groups.size === 0 ? `
             <div class="bg-surface-container-lowest rounded-xl p-8 text-center shadow-sm flex flex-col items-center gap-2">
               <span class="material-symbols-outlined text-[40px] text-outline">receipt_long</span>
-              <p class="font-headline-sm text-headline-sm text-on-surface">Belum ada transaksi cocok</p>
-              <p class="font-body-sm text-body-sm text-on-surface-variant">Coba ubah kata kunci atau catat transaksi baru.</p>
+              <p class="font-headline-sm text-headline-sm text-on-surface">Belum ada transaksi</p>
+              <p class="font-body-sm text-body-sm text-on-surface-variant">Ubah filter atau catat transaksi baru di menu + Catat.</p>
             </div>
           ` : Array.from(groups.entries()).map(([dateKey, items]) => {
             const dayNet = items.reduce((s, t) => s + (t.type === 'income' ? t.amount : -t.amount), 0);
@@ -987,7 +1436,6 @@
         `);
         document.getElementById('modal-close-btn').onclick = closeModal;
         document.getElementById('delete-tx-btn').onclick = () => {
-          // Reverse wallet balance change
           const w = state.wallets.find((item) => item.id === tx.walletId);
           if (w) {
             w.balance += tx.type === 'income' ? -tx.amount : tx.amount;
@@ -1014,7 +1462,6 @@
 
     mainEl.innerHTML = `
       <div class="px-margin-mobile pt-space-xs pb-space-lg flex flex-col gap-space-md">
-        <!-- Segmented Control -->
         <div class="p-1 bg-surface-container-high rounded-full flex items-center shadow-sm">
           <button id="catat-btn-expense" type="button" class="flex-1 py-2 px-3 rounded-full ${isExp ? 'bg-secondary text-on-secondary shadow-sm' : 'text-on-surface-variant'} font-label-md text-label-md flex items-center justify-center gap-1.5 transition-all">
             <span class="material-symbols-outlined text-[18px]">arrow_outward</span>
@@ -1026,7 +1473,6 @@
           </button>
         </div>
 
-        <!-- Amount Card -->
         <div class="bg-surface-container-lowest rounded-xl p-space-md shadow-sm flex flex-col items-center justify-center">
           <div class="flex items-center gap-1 text-on-surface-variant font-label-sm text-label-sm uppercase tracking-wider mb-1">
             <span class="w-2 h-2 rounded-full ${isExp ? 'bg-secondary' : 'bg-primary'} inline-block"></span>
@@ -1051,7 +1497,6 @@
           </div>
         </div>
 
-        <!-- Category Grid -->
         <div class="flex flex-col gap-space-xs">
           <div class="flex items-center justify-between">
             <span class="font-label-lg text-label-lg text-on-surface font-semibold">Pilih Kategori</span>
@@ -1073,7 +1518,6 @@
           </div>
         </div>
 
-        <!-- Wallet Selector -->
         <div class="flex flex-col gap-space-xs">
           <span class="font-label-lg text-label-lg text-on-surface font-semibold">Sumber Dana</span>
           <div class="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
@@ -1089,7 +1533,6 @@
           </div>
         </div>
 
-        <!-- Form Details -->
         <div class="flex flex-col gap-space-sm bg-surface-container-lowest p-space-md rounded-xl shadow-sm">
           <div class="grid grid-cols-2 gap-2">
             <div class="flex flex-col gap-1">
@@ -1273,7 +1716,6 @@
           <p class="font-body-md text-body-md text-on-surface-variant">Kendalikan pengeluaran harian agar tetap mindful setiap saat.</p>
         </div>
 
-        <!-- Monthly Overall Budget Card -->
         <div class="relative overflow-hidden bg-surface-container-lowest rounded-xl p-space-lg shadow-sm flex flex-col gap-space-md">
           <div class="flex items-center justify-between">
             <div class="flex flex-col">
@@ -1311,7 +1753,6 @@
           </div>
         </div>
 
-        <!-- Category Budgets -->
         <div class="flex flex-col gap-space-md">
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-space-xs">
@@ -1368,7 +1809,6 @@
           </div>
         </div>
 
-        <!-- Wallet Accounts -->
         <div class="flex flex-col gap-space-md">
           <div class="flex items-center justify-between">
             <div>
@@ -1616,7 +2056,6 @@
             </div>
           </div>
 
-          <!-- Switcher -->
           <div class="mt-4 p-1 bg-surface-container rounded-xl flex items-center shadow-sm">
             ${[
               { id: 'weekly', label: 'Mingguan' },
@@ -1629,7 +2068,6 @@
             `).join('')}
           </div>
 
-          <!-- Date Navigator -->
           <div class="mt-3 flex items-center justify-between bg-surface-container-lowest rounded-xl p-2 shadow-sm">
             <button id="report-prev" type="button" ${reportRange === 'all' ? 'disabled' : ''} class="w-9 h-9 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container disabled:opacity-30">
               <span class="material-symbols-outlined text-[20px]">chevron_left</span>
@@ -1644,7 +2082,6 @@
           </div>
         </div>
 
-        <!-- Export Card -->
         <div class="px-margin-mobile mt-3">
           <div class="relative overflow-hidden rounded-xl bg-surface-container-lowest p-space-md shadow-md">
             <div class="flex items-start gap-3">
@@ -1680,7 +2117,6 @@
           </div>
         </div>
 
-        <!-- Summary KPI -->
         <div class="px-margin-mobile mt-4">
           <div class="bg-surface-container-lowest rounded-xl p-space-md shadow-sm flex flex-col gap-3">
             <div class="flex items-center justify-between">
@@ -1704,7 +2140,6 @@
           </div>
         </div>
 
-        <!-- Expense Distribution -->
         <div class="px-margin-mobile mt-4">
           <div class="bg-surface-container-lowest rounded-xl p-space-md shadow-sm flex flex-col">
             <div class="flex items-center justify-between mb-3">
@@ -1752,7 +2187,6 @@
           </div>
         </div>
 
-        <!-- Spreadsheet Preview -->
         <div class="px-margin-mobile mt-4">
           <div class="bg-surface-container-lowest rounded-xl p-space-md shadow-sm flex flex-col">
             <div class="flex items-center justify-between mb-2">
@@ -1820,7 +2254,180 @@
     document.getElementById('btn-dl-csv').onclick = () => exportCSV(txs);
   }
 
+  // ==================== ACCOUNT SETTINGS MODAL ====================
+  function openAccountSettingsModal() {
+    const acc = vault.accounts[currentEmail];
+    const initial = (state.userName || currentEmail || 'U').trim().charAt(0).toUpperCase();
+    const installed = isAppInstalled();
+
+    openModal(`
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-headline-sm text-headline-sm text-on-surface">Pengaturan Akun</h3>
+        <button id="modal-close-btn" type="button" class="w-8 h-8 rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant">
+          <span class="material-symbols-outlined text-[18px]">close</span>
+        </button>
+      </div>
+
+      <!-- Connected Email Banner -->
+      <div class="p-3.5 rounded-xl bg-primary-fixed/30 flex items-center gap-3 mb-4">
+        <div class="w-11 h-11 rounded-full bg-primary text-on-primary font-headline-sm font-bold flex items-center justify-center shrink-0">
+          ${esc(initial)}
+        </div>
+        <div class="min-w-0 flex-1">
+          <p class="font-label-lg text-on-surface font-bold truncate">${esc(state.userName)}</p>
+          <p class="font-body-sm text-on-primary-fixed-variant truncate flex items-center gap-1">
+            <span class="material-symbols-outlined text-[14px]">mail</span>
+            <span>${esc(currentEmail)}</span>
+          </p>
+        </div>
+        <span class="px-2 py-0.5 rounded-full bg-primary text-on-primary font-label-sm text-[10px] font-bold shrink-0">Terhubung</span>
+      </div>
+
+      <div class="space-y-4">
+        <!-- Edit Display Name -->
+        <div class="space-y-1.5">
+          <label class="font-label-sm text-label-sm text-on-surface-variant" for="acc-name">Nama Panggilan</label>
+          <div class="flex gap-2">
+            <input id="acc-name" type="text" value="${esc(state.userName)}" class="flex-1 px-3 py-2 rounded-lg bg-surface-container-low text-on-surface focus:outline-none">
+            <button id="acc-save-name" type="button" class="px-3.5 py-2 rounded-lg bg-primary text-on-primary font-label-sm font-bold">Simpan</button>
+          </div>
+        </div>
+
+        <!-- Change Password -->
+        <div class="p-3 rounded-xl bg-surface-container-low space-y-2">
+          <p class="font-label-md text-on-surface font-semibold flex items-center gap-1.5">
+            <span class="material-symbols-outlined text-[17px] text-primary">lock</span>
+            <span>Keamanan Password</span>
+          </p>
+          <input id="acc-old-pw" type="password" placeholder="Password saat ini" class="w-full px-3 py-2 rounded-lg bg-surface-container-lowest text-on-surface text-body-sm focus:outline-none">
+          <input id="acc-new-pw" type="password" placeholder="Password baru (min. 6 karakter)" class="w-full px-3 py-2 rounded-lg bg-surface-container-lowest text-on-surface text-body-sm focus:outline-none">
+          <button id="acc-save-pw" type="button" class="w-full py-2 rounded-lg bg-surface-container-highest text-on-surface font-label-sm font-bold hover:opacity-90">
+            Ubah Password
+          </button>
+        </div>
+
+        <!-- Backup & Restore -->
+        <div class="space-y-2">
+          <p class="font-label-sm text-label-sm text-on-surface-variant">Cadangan Data Email (${state.transactions.length} transaksi)</p>
+          <div class="grid grid-cols-2 gap-2">
+            <button id="acc-export-backup" type="button" class="py-2.5 px-3 rounded-xl bg-surface-container text-on-surface font-label-sm font-bold flex items-center justify-center gap-1">
+              <span class="material-symbols-outlined text-[17px]">download</span>
+              <span>Backup JSON</span>
+            </button>
+            <button id="acc-import-backup" type="button" class="py-2.5 px-3 rounded-xl bg-surface-container text-on-surface font-label-sm font-bold flex items-center justify-center gap-1">
+              <span class="material-symbols-outlined text-[17px]">upload</span>
+              <span>Pulihkan JSON</span>
+            </button>
+          </div>
+        </div>
+
+        ${!installed ? `
+          <button id="acc-install-btn" type="button" class="w-full py-2.5 rounded-xl bg-primary-fixed/50 text-on-primary-fixed font-label-md font-bold flex items-center justify-center gap-1.5">
+            <span class="material-symbols-outlined text-[18px]">install_mobile</span>
+            <span>Pasang Aplikasi di HP</span>
+          </button>
+        ` : ''}
+
+        <div class="grid grid-cols-2 gap-2">
+          <button id="acc-load-demo" type="button" class="py-2 px-3 rounded-xl bg-surface-container-low text-on-surface-variant font-label-sm font-semibold">Muat Data Contoh</button>
+          <button id="acc-clear-data" type="button" class="py-2 px-3 rounded-xl bg-surface-container-low text-secondary font-label-sm font-semibold">Kosongkan Data</button>
+        </div>
+
+        <!-- Logout -->
+        <button id="acc-logout-btn" type="button" class="w-full py-3 rounded-xl bg-error-container text-on-error-container font-label-md font-bold flex items-center justify-center gap-2 hover:opacity-90">
+          <span class="material-symbols-outlined text-[19px]">logout</span>
+          <span>Keluar / Ganti Akun</span>
+        </button>
+      </div>
+      ${acc ? `<p class="text-center font-label-sm text-outline mt-3">Terdaftar sejak ${esc(new Date(acc.createdAt).toLocaleDateString('id-ID'))}</p>` : ''}
+    `);
+
+    document.getElementById('modal-close-btn').onclick = closeModal;
+
+    document.getElementById('acc-save-name').onclick = () => {
+      const val = document.getElementById('acc-name').value.trim();
+      if (!val) {
+        showToast('Nama tidak boleh kosong', 'error');
+        return;
+      }
+      state.userName = val;
+      saveState();
+      showToast('Nama akun diperbarui');
+      closeModal();
+      render();
+    };
+
+    document.getElementById('acc-save-pw').onclick = async () => {
+      const oldPw = document.getElementById('acc-old-pw').value;
+      const newPw = document.getElementById('acc-new-pw').value;
+      const account = vault.accounts[currentEmail];
+      if (!account) return;
+      const oldHash = await hashPassword(oldPw, account.salt);
+      if (oldHash !== account.passwordHash) {
+        showToast('Password saat ini salah', 'error');
+        return;
+      }
+      if (newPw.length < 6) {
+        showToast('Password baru minimal 6 karakter', 'error');
+        return;
+      }
+      const newSalt = generateSalt();
+      account.salt = newSalt;
+      account.passwordHash = await hashPassword(newPw, newSalt);
+      saveVault();
+      showToast('Password berhasil diubah');
+      closeModal();
+    };
+
+    document.getElementById('acc-export-backup').onclick = exportAccountBackup;
+    document.getElementById('acc-import-backup').onclick = () => {
+      closeModal();
+      openRestoreBackupModal(false);
+    };
+
+    const accInstallBtn = document.getElementById('acc-install-btn');
+    if (accInstallBtn) {
+      accInstallBtn.onclick = () => {
+        closeModal();
+        triggerInstall();
+      };
+    }
+
+    document.getElementById('acc-load-demo').onclick = () => {
+      state = createDemoUserData(state.userName);
+      saveState();
+      closeModal();
+      showToast('Data contoh dimuat untuk akun ini');
+      render();
+    };
+
+    document.getElementById('acc-clear-data').onclick = () => {
+      state = createEmptyUserData(state.userName);
+      saveState();
+      closeModal();
+      showToast('Data akun dikosongkan');
+      render();
+    };
+
+    document.getElementById('acc-logout-btn').onclick = () => {
+      saveState();
+      clearActiveSession();
+      state = null;
+      closeModal();
+      authMode = 'login';
+      showToast('Anda telah keluar. Data email tetap tersimpan aman.');
+      render();
+    };
+  }
+
   function render() {
+    if (!currentEmail || !state) {
+      renderAuthScreen();
+      return;
+    }
+    authScreenEl.classList.add('hidden');
+    appShellEl.classList.remove('hidden');
+
     updateNavChrome();
     if (activeTab === 'beranda') renderBeranda();
     else if (activeTab === 'mutasi') renderMutasi();
@@ -1829,9 +2436,9 @@
     else if (activeTab === 'laporan') renderLaporan();
   }
 
-  // Global header & nav bindings
   document.getElementById('header-brand-btn').onclick = () => setActiveTab('beranda');
   headerInstallBtn.onclick = triggerInstall;
+  document.getElementById('btn-profile').onclick = openAccountSettingsModal;
 
   document.getElementById('btn-notif').onclick = () => {
     document.getElementById('notif-dot').classList.add('hidden');
@@ -1844,61 +2451,16 @@
       </div>
       <div class="space-y-2.5 text-body-sm">
         <div class="p-3 rounded-xl bg-primary-fixed/30">
-          <p class="font-semibold text-on-surface">Finora siap dipasang sebagai aplikasi HP</p>
-          <p class="text-on-surface-variant mt-0.5">Data keuanganmu tersimpan aman di perangkat secara offline.</p>
+          <p class="font-semibold text-on-surface">Terhubung ke ${esc(currentEmail)}</p>
+          <p class="text-on-surface-variant mt-0.5">Semua transaksi, dompet, dan budget tersimpan rapi untuk email ini.</p>
         </div>
         <div class="p-3 rounded-xl bg-surface-container-low">
-          <p class="font-semibold text-on-surface">Pengingat Catat Harian</p>
-          <p class="text-on-surface-variant mt-0.5">Jangan lupa catat pengeluaran hari ini agar anggaran tetap terkendali.</p>
+          <p class="font-semibold text-on-surface">Tips Keamanan & Backup</p>
+          <p class="text-on-surface-variant mt-0.5">Gunakan menu Pengaturan Akun di pojok kanan atas untuk Backup JSON jika ingin pindah perangkat.</p>
         </div>
       </div>
     `);
     document.getElementById('modal-close-btn').onclick = closeModal;
-  };
-
-  document.getElementById('btn-profile').onclick = () => {
-    openModal(`
-      <div class="flex items-center justify-between mb-4">
-        <h3 class="font-headline-sm text-headline-sm text-on-surface">Profil & Pengaturan</h3>
-        <button id="modal-close-btn" type="button" class="w-8 h-8 rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant">
-          <span class="material-symbols-outlined text-[18px]">close</span>
-        </button>
-      </div>
-      <div class="space-y-3">
-        <div>
-          <label class="font-label-sm text-label-sm text-on-surface-variant" for="profile-name">Nama Panggilan</label>
-          <input id="profile-name" type="text" value="${esc(state.userName)}" class="mt-1 w-full px-3 py-2.5 rounded-lg bg-surface-container-low text-on-surface focus:outline-none">
-        </div>
-        <button id="save-profile-btn" type="button" class="w-full py-2.5 rounded-xl bg-primary text-on-primary font-label-md font-bold">Simpan Nama</button>
-        <button id="open-install-from-profile" type="button" class="w-full py-2.5 rounded-xl bg-primary-fixed/40 text-on-primary-fixed font-label-md font-bold flex items-center justify-center gap-1.5">
-          <span class="material-symbols-outlined text-[18px]">install_mobile</span>
-          <span>Panduan Pasang di HP</span>
-        </button>
-        <button id="reset-demo-btn" type="button" class="w-full py-2.5 rounded-xl bg-error-container text-on-error-container font-label-md font-semibold">Reset Data ke Contoh Awal</button>
-      </div>
-    `);
-    document.getElementById('modal-close-btn').onclick = closeModal;
-    document.getElementById('save-profile-btn').onclick = () => {
-      const val = document.getElementById('profile-name').value.trim();
-      if (val) {
-        state.userName = val;
-        saveState();
-        closeModal();
-        showToast('Profil diperbarui');
-        render();
-      }
-    };
-    document.getElementById('open-install-from-profile').onclick = () => {
-      closeModal();
-      triggerInstall();
-    };
-    document.getElementById('reset-demo-btn').onclick = () => {
-      state = createSeedState();
-      saveState();
-      closeModal();
-      showToast('Data berhasil direset ke contoh awal');
-      render();
-    };
   };
 
   document.querySelectorAll('.nav-tab').forEach((btn) => {
@@ -1912,22 +2474,33 @@
 
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
+    localStorage.removeItem(INSTALLED_KEY);
     deferredInstallPrompt = e;
     updateInstallButtonVisibility();
     render();
   });
 
   window.addEventListener('appinstalled', () => {
+    localStorage.setItem(INSTALLED_KEY, '1');
     deferredInstallPrompt = null;
     updateInstallButtonVisibility();
     showToast('Finora berhasil dipasang!');
+    render();
   });
+
+  if (navigator.getInstalledRelatedApps) {
+    navigator.getInstalledRelatedApps().then((apps) => {
+      if (apps && apps.length > 0) {
+        localStorage.setItem(INSTALLED_KEY, '1');
+        updateInstallButtonVisibility();
+        render();
+      }
+    }).catch(() => {});
+  }
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js').catch(() => {
-        // SW registration requires HTTPS or localhost
-      });
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
     });
   }
 
