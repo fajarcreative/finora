@@ -508,8 +508,12 @@
     const userMeta = freshUser?.user_metadata || {};
     const cachedPin = vault.accounts[normalizeEmail(user.email)]?.data;
 
-    const resolvedPinSalt = profRes.data?.pin_salt || userMeta.pin_salt || cachedPin?.pinSalt || '';
-    const resolvedPinHash = profRes.data?.pin_hash || userMeta.pin_hash || cachedPin?.pinHash || '';
+    const cloudPinSalt = profRes.data?.pin_salt || userMeta.pin_salt || '';
+    const cloudPinHash = profRes.data?.pin_hash || userMeta.pin_hash || '';
+    const hasCloudPin = Boolean(cloudPinSalt && cloudPinHash);
+
+    const resolvedPinSalt = cloudPinSalt || cachedPin?.pinSalt || '';
+    const resolvedPinHash = cloudPinHash || cachedPin?.pinHash || '';
 
     if (!profRes.data) {
       const fallbackName = userMeta.user_name || (user.email ? user.email.split('@')[0] : 'Pengguna');
@@ -518,7 +522,13 @@
         pinHash: resolvedPinHash
       });
       await pushUserDataToCloud(user, seeded);
-      return { data: seeded, createdAt: user.created_at || new Date().toISOString() };
+      return {
+        createdAt: user.created_at || new Date().toISOString(),
+        hasCloudPin,
+        cloudPinSalt,
+        cloudPinHash,
+        data: seeded
+      };
     }
 
     const wallets = (walRes.data || []).map((w) => ({
@@ -550,6 +560,9 @@
 
     return {
       createdAt: profRes.data.created_at || user.created_at || new Date().toISOString(),
+      hasCloudPin,
+      cloudPinSalt,
+      cloudPinHash,
       data: {
         userName: profRes.data.user_name || 'Pengguna',
         hideBalance: Boolean(profRes.data.hide_balance),
@@ -634,9 +647,14 @@
       const pinSalt = op.payload.pinSalt || '';
       const pinHash = op.payload.pinHash || '';
       if (pinSalt && pinHash) {
-        await sb.auth.updateUser({
-          data: { pin_salt: pinSalt, pin_hash: pinHash }
-        }).catch(() => {});
+        try {
+          const { data: upRes } = await sb.auth.updateUser({
+            data: { pin_salt: pinSalt, pin_hash: pinHash }
+          });
+          if (upRes?.user) cloudUser = upRes.user;
+        } catch (e) {
+          console.warn('executeCloudOp updateUser pin error:', e);
+        }
       }
       const { error } = await sb.from('profiles').update({
         pin_salt: pinSalt,
@@ -732,6 +750,16 @@
 
     realtimeChannel = sb
       .channel(`finora-sync-${userId}`)
+      .on('broadcast', { event: 'pin_updated' }, (msg) => {
+        if (msg?.payload?.pinSalt && msg?.payload?.pinHash) {
+          if (state) {
+            state.pinSalt = msg.payload.pinSalt;
+            state.pinHash = msg.payload.pinHash;
+            saveState();
+          }
+        }
+        scheduleRefresh();
+      })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${userId}` }, scheduleRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wallets', filter: `user_id=eq.${userId}` }, scheduleRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'budgets', filter: `user_id=eq.${userId}` }, scheduleRefresh)
@@ -767,22 +795,30 @@
         setPendingMigration(email, false);
       }
 
-      // Auto-migrate local PIN into Cloud if MacBook has local PIN but Cloud doesn't have it yet
+      // Auto-migrate local PIN into Cloud if this device has local PIN but Cloud doesn't have it yet
       const localPinSalt = prevLocalData?.pinSalt || state?.pinSalt || '';
       const localPinHash = prevLocalData?.pinHash || state?.pinHash || '';
-      if (localPinSalt && localPinHash && (!fetched.data.pinSalt || !fetched.data.pinHash)) {
+      if (localPinSalt && localPinHash && !fetched.hasCloudPin) {
         fetched.data.pinSalt = localPinSalt;
         fetched.data.pinHash = localPinHash;
-        await sb.auth.updateUser({
-          data: {
-            pin_salt: localPinSalt,
-            pin_hash: localPinHash
-          }
-        }).catch(() => {});
+        try {
+          const { data: upRes } = await sb.auth.updateUser({
+            data: {
+              pin_salt: localPinSalt,
+              pin_hash: localPinHash
+            }
+          });
+          if (upRes?.user) cloudUser = upRes.user;
+        } catch (e) {
+          console.warn('Auto-upload local PIN to cloud failed:', e);
+        }
         sb.from('profiles').update({
           pin_salt: localPinSalt,
           pin_hash: localPinHash
         }).eq('id', user.id).then(() => {}).catch(() => {});
+      } else if (fetched.hasCloudPin) {
+        fetched.data.pinSalt = fetched.cloudPinSalt;
+        fetched.data.pinHash = fetched.cloudPinHash;
       }
 
       state = fetched.data;
@@ -826,15 +862,27 @@
       if (!flushed) return;
       const fetched = await fetchCloudState(cloudUser);
       if (!fetched) return;
-      if (state?.pinSalt && state?.pinHash && (!fetched.data.pinSalt || !fetched.data.pinHash)) {
+      if (state?.pinSalt && state?.pinHash && !fetched.hasCloudPin) {
         fetched.data.pinSalt = state.pinSalt;
         fetched.data.pinHash = state.pinHash;
-        await sb.auth.updateUser({
-          data: {
-            pin_salt: state.pinSalt,
-            pin_hash: state.pinHash
-          }
-        }).catch(() => {});
+        try {
+          const { data: upRes } = await sb.auth.updateUser({
+            data: {
+              pin_salt: state.pinSalt,
+              pin_hash: state.pinHash
+            }
+          });
+          if (upRes?.user) cloudUser = upRes.user;
+        } catch (e) {
+          console.warn('Sync PIN to cloud failed:', e);
+        }
+        sb.from('profiles').update({
+          pin_salt: state.pinSalt,
+          pin_hash: state.pinHash
+        }).eq('id', cloudUser.id).then(() => {}).catch(() => {});
+      } else if (fetched.hasCloudPin) {
+        fetched.data.pinSalt = fetched.cloudPinSalt;
+        fetched.data.pinHash = fetched.cloudPinHash;
       }
       state = fetched.data;
       cacheUserStateLocally(currentEmail, state, {
@@ -2336,6 +2384,156 @@
     bindTxDetailHandlers();
   }
 
+  function openDeleteTxConfirmModal(tx) {
+    if (!tx) return;
+    const cat = getCategory(tx.categoryId);
+    const wal = getWallet(tx.walletId);
+    const isInc = tx.type === 'income';
+
+    if (!state?.pinHash || !state?.pinSalt) {
+      openModal(`
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2">
+            <div class="w-9 h-9 rounded-xl bg-error-container text-on-error-container flex items-center justify-center">
+              <span class="material-symbols-outlined text-[20px]">pin</span>
+            </div>
+            <h3 class="font-headline-sm text-headline-sm text-on-surface">PIN Belum Diatur</h3>
+          </div>
+          <button id="modal-close-btn" type="button" class="w-8 h-8 rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant">
+            <span class="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        </div>
+        <p class="font-body-sm text-body-sm text-on-surface-variant mb-4">
+          Untuk melindungi riwayat keuangan Anda, penghapusan transaksi mewajibkan verifikasi <strong>PIN Keamanan (6 digit)</strong>. Silakan buat PIN Anda terlebih dahulu di menu Pengaturan Akun.
+        </p>
+        <div class="flex gap-2">
+          <button id="del-tx-go-pin-btn" type="button" class="flex-1 py-2.5 rounded-xl bg-primary text-on-primary font-label-md font-bold">
+            Buat PIN Sekarang
+          </button>
+          <button id="del-tx-cancel-btn" type="button" class="py-2.5 px-4 rounded-xl bg-surface-container text-on-surface font-label-md font-semibold">
+            Batal
+          </button>
+        </div>
+      `);
+      document.getElementById('modal-close-btn').onclick = closeModal;
+      document.getElementById('del-tx-cancel-btn').onclick = closeModal;
+      document.getElementById('del-tx-go-pin-btn').onclick = () => {
+        openAccountSettingsModal();
+        setTimeout(() => {
+          const pinInp = document.getElementById('acc-new-pin');
+          if (pinInp) {
+            pinInp.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            pinInp.focus();
+          }
+        }, 60);
+      };
+      return;
+    }
+
+    openModal(`
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <div class="w-9 h-9 rounded-xl bg-error-container text-on-error-container flex items-center justify-center">
+            <span class="material-symbols-outlined text-[20px]">delete</span>
+          </div>
+          <div>
+            <h3 class="font-headline-sm text-headline-sm text-on-surface">Hapus Transaksi</h3>
+            <p class="font-body-sm text-body-sm text-secondary">Verifikasi PIN keamanan diperlukan</p>
+          </div>
+        </div>
+        <button id="modal-close-btn" type="button" class="w-8 h-8 rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant">
+          <span class="material-symbols-outlined text-[18px]">close</span>
+        </button>
+      </div>
+
+      <div class="p-3 rounded-xl bg-surface-container-low mb-3 space-y-1.5">
+        <div class="flex justify-between items-center text-body-sm">
+          <span class="text-on-surface-variant">Jenis</span>
+          <span class="font-semibold ${isInc ? 'text-primary' : 'text-secondary'}">${isInc ? 'Pemasukan' : 'Pengeluaran'}</span>
+        </div>
+        <div class="flex justify-between items-center text-body-sm">
+          <span class="text-on-surface-variant">Nominal</span>
+          <span class="font-semibold ${isInc ? 'text-primary' : 'text-secondary'}">${isInc ? '+' : '-'}Rp ${formatRp(tx.amount)}</span>
+        </div>
+        <div class="flex justify-between items-center text-body-sm">
+          <span class="text-on-surface-variant">Keterangan</span>
+          <span class="font-medium text-on-surface">${esc(tx.note || cat.name)}</span>
+        </div>
+        <div class="flex justify-between items-center text-body-sm">
+          <span class="text-on-surface-variant">Sumber Dana</span>
+          <span class="font-medium text-on-surface">${esc(wal.name)}</span>
+        </div>
+        <div class="flex justify-between items-center text-body-sm">
+          <span class="text-on-surface-variant">Waktu</span>
+          <span class="text-on-surface-variant">${esc(formatIndoDate(tx.date))} • ${esc(tx.time)}</span>
+        </div>
+      </div>
+
+      <p class="text-[12px] text-on-surface-variant mb-3 leading-relaxed">
+        *Saldo dompet <strong>${esc(wal.name)}</strong> akan otomatis disesuaikan (dikembalikan) saat transaksi ini dihapus.
+      </p>
+
+      <form id="delete-tx-pin-form" class="space-y-3" novalidate>
+        <div>
+          <label class="font-label-sm text-label-sm text-on-surface-variant" for="delete-tx-pin">Masukkan PIN Keamanan (6 digit)</label>
+          <input id="delete-tx-pin" type="password" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="••••••" class="mt-1 w-full px-3 py-2.5 rounded-xl bg-surface-container-low text-on-surface font-numeric-table tracking-widest focus:outline-none focus:ring-2 focus:ring-error/30" required autofocus>
+        </div>
+        <div class="flex gap-2 pt-1">
+          <button id="del-tx-form-cancel" type="button" class="py-2.5 px-4 rounded-xl bg-surface-container text-on-surface font-label-md font-semibold">
+            Batal
+          </button>
+          <button type="submit" id="del-tx-confirm-submit" class="flex-1 py-2.5 rounded-xl bg-error text-on-error font-label-md font-bold flex items-center justify-center gap-1.5 hover:opacity-90">
+            <span class="material-symbols-outlined text-[18px]">delete</span>
+            <span>Konfirmasi Hapus</span>
+          </button>
+        </div>
+      </form>
+    `);
+
+    document.getElementById('modal-close-btn').onclick = closeModal;
+    document.getElementById('del-tx-form-cancel').onclick = closeModal;
+    setTimeout(() => {
+      const pinInp = document.getElementById('delete-tx-pin');
+      if (pinInp) pinInp.focus();
+    }, 60);
+
+    document.getElementById('delete-tx-pin-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const pinInput = String(document.getElementById('delete-tx-pin').value || '').trim();
+      if (!/^\d{6}$/.test(pinInput)) {
+        showToast('PIN harus terdiri dari 6 digit angka', 'error');
+        return;
+      }
+
+      const submitBtn = document.getElementById('del-tx-confirm-submit');
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Memverifikasi...';
+      }
+
+      const attemptHash = await hashPassword(pinInput, state.pinSalt);
+      if (attemptHash !== state.pinHash) {
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = '<span class="material-symbols-outlined text-[18px]">delete</span><span>Konfirmasi Hapus</span>';
+        }
+        showToast('PIN keamanan salah. Transaksi batal dihapus.', 'error');
+        return;
+      }
+
+      const w = state.wallets.find((item) => item.id === tx.walletId);
+      if (w) {
+        w.balance += tx.type === 'income' ? -tx.amount : tx.amount;
+      }
+      state.transactions = state.transactions.filter((item) => item.id !== tx.id);
+      saveState();
+      syncCloudAction({ type: 'delete_tx', payload: { id: tx.id } });
+      closeModal();
+      showToast('Transaksi berhasil dihapus & saldo dompet disesuaikan');
+      render();
+    };
+  }
+
   function bindTxDetailHandlers() {
     document.querySelectorAll('.tx-item-btn').forEach((btn) => {
       btn.onclick = () => {
@@ -2383,16 +2581,7 @@
         `);
         document.getElementById('modal-close-btn').onclick = closeModal;
         document.getElementById('delete-tx-btn').onclick = () => {
-          const w = state.wallets.find((item) => item.id === tx.walletId);
-          if (w) {
-            w.balance += tx.type === 'income' ? -tx.amount : tx.amount;
-          }
-          state.transactions = state.transactions.filter((item) => item.id !== tx.id);
-          saveState();
-          syncCloudAction({ type: 'delete_tx', payload: { id: tx.id } });
-          closeModal();
-          showToast('Transaksi dihapus dan saldo dompet disesuaikan');
-          render();
+          openDeleteTxConfirmModal(tx);
         };
       };
     });
@@ -3524,20 +3713,41 @@
       state.pinHash = pinHash;
       saveState();
 
-      if (sb && cloudUser) {
-        await sb.auth.updateUser({
-          data: {
+      if (sb) {
+        try {
+          const { data: upData, error: upErr } = await sb.auth.updateUser({
+            data: {
+              pin_salt: pinSalt,
+              pin_hash: pinHash
+            }
+          });
+          if (upData?.user) cloudUser = upData.user;
+          if (upErr) console.warn('Update user metadata pin error:', upErr);
+        } catch (e) {
+          console.warn('Update user metadata pin failed:', e);
+        }
+
+        if (cloudUser?.id) {
+          sb.from('profiles').update({
             pin_salt: pinSalt,
             pin_hash: pinHash
-          }
-        }).catch(() => {});
+          }).eq('id', cloudUser.id).then(() => {}).catch(() => {});
+        }
+
+        if (realtimeChannel) {
+          realtimeChannel.send({
+            type: 'broadcast',
+            event: 'pin_updated',
+            payload: { pinSalt, pinHash }
+          }).catch(() => {});
+        }
       }
 
       syncCloudAction({
         type: 'update_pin',
         payload: { pinSalt, pinHash }
       });
-      showToast(hasPin ? 'PIN keamanan berhasil diubah' : 'PIN keamanan berhasil dibuat & tersinkron ke HP');
+      showToast(hasPin ? 'PIN keamanan berhasil diubah & tersinkron ke semua perangkat' : 'PIN keamanan berhasil dibuat & tersinkron ke semua perangkat');
       openAccountSettingsModal();
     };
 
