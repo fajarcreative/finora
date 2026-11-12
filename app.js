@@ -390,6 +390,15 @@
     const email = normalizeEmail(user.email || currentEmail);
     const userId = user.id;
 
+    if (data.pinSalt && data.pinHash) {
+      await sb.auth.updateUser({
+        data: {
+          pin_salt: data.pinSalt,
+          pin_hash: data.pinHash
+        }
+      }).catch(() => {});
+    }
+
     const profilePayload = {
       id: userId,
       email,
@@ -478,11 +487,12 @@
     if (!sb || !user) return null;
     const userId = user.id;
 
-    let [profRes, walRes, bgtRes, txRes] = await Promise.all([
+    let [profRes, walRes, bgtRes, txRes, freshUserRes] = await Promise.all([
       sb.from('profiles').select('id, email, user_name, hide_balance, pin_salt, pin_hash, created_at').eq('id', userId).maybeSingle(),
       sb.from('wallets').select('id, client_id, name, subtitle, icon, badge, balance, sort_order').eq('user_id', userId).order('sort_order', { ascending: true }).order('created_at', { ascending: true }),
       sb.from('budgets').select('category_id, monthly_limit').eq('user_id', userId),
-      sb.from('transactions').select('client_id, wallet_client_id, type, amount, category_id, note, tag, tx_date, tx_time, receipt_name').eq('user_id', userId).order('tx_date', { ascending: false }).order('tx_time', { ascending: false }).order('created_at', { ascending: false })
+      sb.from('transactions').select('client_id, wallet_client_id, type, amount, category_id, note, tag, tx_date, tx_time, receipt_name').eq('user_id', userId).order('tx_date', { ascending: false }).order('tx_time', { ascending: false }).order('created_at', { ascending: false }),
+      sb.auth.getUser().catch(() => ({ data: { user } }))
     ]);
 
     if (profRes.error && isMissingColumnError(profRes.error)) {
@@ -494,9 +504,19 @@
     if (bgtRes.error) throw bgtRes.error;
     if (txRes.error) throw txRes.error;
 
+    const freshUser = freshUserRes?.data?.user || user;
+    const userMeta = freshUser?.user_metadata || {};
+    const cachedPin = vault.accounts[normalizeEmail(user.email)]?.data;
+
+    const resolvedPinSalt = profRes.data?.pin_salt || userMeta.pin_salt || cachedPin?.pinSalt || '';
+    const resolvedPinHash = profRes.data?.pin_hash || userMeta.pin_hash || cachedPin?.pinHash || '';
+
     if (!profRes.data) {
-      const fallbackName = user.user_metadata?.user_name || (user.email ? user.email.split('@')[0] : 'Pengguna');
-      const seeded = createEmptyUserData(fallbackName);
+      const fallbackName = userMeta.user_name || (user.email ? user.email.split('@')[0] : 'Pengguna');
+      const seeded = createEmptyUserData(fallbackName, {
+        pinSalt: resolvedPinSalt,
+        pinHash: resolvedPinHash
+      });
       await pushUserDataToCloud(user, seeded);
       return { data: seeded, createdAt: user.created_at || new Date().toISOString() };
     }
@@ -528,14 +548,13 @@
       receiptName: t.receipt_name
     }));
 
-    const cachedPin = vault.accounts[normalizeEmail(user.email)]?.data;
     return {
       createdAt: profRes.data.created_at || user.created_at || new Date().toISOString(),
       data: {
         userName: profRes.data.user_name || 'Pengguna',
         hideBalance: Boolean(profRes.data.hide_balance),
-        pinSalt: profRes.data.pin_salt || cachedPin?.pinSalt || '',
-        pinHash: profRes.data.pin_hash || cachedPin?.pinHash || '',
+        pinSalt: resolvedPinSalt,
+        pinHash: resolvedPinHash,
         wallets: wallets.length > 0 ? wallets : createEmptyUserData(profRes.data.user_name).wallets,
         budgets,
         transactions
@@ -612,9 +631,16 @@
     }
 
     if (op.type === 'update_pin') {
+      const pinSalt = op.payload.pinSalt || '';
+      const pinHash = op.payload.pinHash || '';
+      if (pinSalt && pinHash) {
+        await sb.auth.updateUser({
+          data: { pin_salt: pinSalt, pin_hash: pinHash }
+        }).catch(() => {});
+      }
       const { error } = await sb.from('profiles').update({
-        pin_salt: op.payload.pinSalt || '',
-        pin_hash: op.payload.pinHash || ''
+        pin_salt: pinSalt,
+        pin_hash: pinHash
       }).eq('id', userId);
       if (error && !isMissingColumnError(error)) throw error;
       return;
@@ -741,6 +767,24 @@
         setPendingMigration(email, false);
       }
 
+      // Auto-migrate local PIN into Cloud if MacBook has local PIN but Cloud doesn't have it yet
+      const localPinSalt = prevLocalData?.pinSalt || state?.pinSalt || '';
+      const localPinHash = prevLocalData?.pinHash || state?.pinHash || '';
+      if (localPinSalt && localPinHash && (!fetched.data.pinSalt || !fetched.data.pinHash)) {
+        fetched.data.pinSalt = localPinSalt;
+        fetched.data.pinHash = localPinHash;
+        await sb.auth.updateUser({
+          data: {
+            pin_salt: localPinSalt,
+            pin_hash: localPinHash
+          }
+        }).catch(() => {});
+        sb.from('profiles').update({
+          pin_salt: localPinSalt,
+          pin_hash: localPinHash
+        }).eq('id', user.id).then(() => {}).catch(() => {});
+      }
+
       state = fetched.data;
       cacheUserStateLocally(email, state, {
         createdAt: fetched.createdAt,
@@ -782,6 +826,16 @@
       if (!flushed) return;
       const fetched = await fetchCloudState(cloudUser);
       if (!fetched) return;
+      if (state?.pinSalt && state?.pinHash && (!fetched.data.pinSalt || !fetched.data.pinHash)) {
+        fetched.data.pinSalt = state.pinSalt;
+        fetched.data.pinHash = state.pinHash;
+        await sb.auth.updateUser({
+          data: {
+            pin_salt: state.pinSalt,
+            pin_hash: state.pinHash
+          }
+        }).catch(() => {});
+      }
       state = fetched.data;
       cacheUserStateLocally(currentEmail, state, {
         createdAt: fetched.createdAt,
@@ -3458,16 +3512,32 @@
         return;
       }
 
+      const savePinBtn = document.getElementById('acc-save-pin');
+      if (savePinBtn) {
+        savePinBtn.disabled = true;
+        savePinBtn.textContent = 'Menyimpan...';
+      }
+
       const pinSalt = generateSalt();
       const pinHash = await hashPassword(newPin, pinSalt);
       state.pinSalt = pinSalt;
       state.pinHash = pinHash;
       saveState();
+
+      if (sb && cloudUser) {
+        await sb.auth.updateUser({
+          data: {
+            pin_salt: pinSalt,
+            pin_hash: pinHash
+          }
+        }).catch(() => {});
+      }
+
       syncCloudAction({
         type: 'update_pin',
         payload: { pinSalt, pinHash }
       });
-      showToast(hasPin ? 'PIN keamanan berhasil diubah' : 'PIN keamanan berhasil dibuat');
+      showToast(hasPin ? 'PIN keamanan berhasil diubah' : 'PIN keamanan berhasil dibuat & tersinkron ke HP');
       openAccountSettingsModal();
     };
 
