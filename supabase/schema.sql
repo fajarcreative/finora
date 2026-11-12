@@ -15,9 +15,14 @@ create table if not exists public.profiles (
   email text not null,
   user_name text not null default 'Pengguna',
   hide_balance boolean not null default false,
+  pin_salt text not null default '',
+  pin_hash text not null default '',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.profiles add column if not exists pin_salt text not null default '';
+alter table public.profiles add column if not exists pin_hash text not null default '';
 
 create table if not exists public.wallets (
   id uuid primary key default gen_random_uuid(),

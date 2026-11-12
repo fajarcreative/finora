@@ -68,10 +68,12 @@
     return budgets;
   }
 
-  function createEmptyUserData(userName) {
+  function createEmptyUserData(userName, extra = {}) {
     return {
       userName: userName || 'Pengguna',
       hideBalance: false,
+      pinSalt: extra.pinSalt || '',
+      pinHash: extra.pinHash || '',
       wallets: [
         { id: 'tunai', name: 'Dompet Tunai', subtitle: 'Uang fisik di saku', icon: 'payments', badge: 'Aktif', balance: 0 },
         { id: 'bca', name: 'Rekening Bank', subtitle: 'Gaji & Operasional', icon: 'account_balance', badge: 'Utama', balance: 0 },
@@ -377,12 +379,22 @@
     const email = normalizeEmail(user.email || currentEmail);
     const userId = user.id;
 
-    const { error: profErr } = await sb.from('profiles').upsert({
+    const profilePayload = {
       id: userId,
       email,
       user_name: data.userName || 'Pengguna',
       hide_balance: Boolean(data.hideBalance)
-    }, { onConflict: 'id' });
+    };
+    if (data.pinSalt || data.pinHash) {
+      profilePayload.pin_salt = data.pinSalt || '';
+      profilePayload.pin_hash = data.pinHash || '';
+    }
+    let { error: profErr } = await sb.from('profiles').upsert(profilePayload, { onConflict: 'id' });
+    if (profErr && String(profErr.code || '') === '42703') {
+      delete profilePayload.pin_salt;
+      delete profilePayload.pin_hash;
+      ({ error: profErr } = await sb.from('profiles').upsert(profilePayload, { onConflict: 'id' }));
+    }
     if (profErr) throw profErr;
 
     const walletsInput = Array.isArray(data.wallets) && data.wallets.length > 0
@@ -455,12 +467,16 @@
     if (!sb || !user) return null;
     const userId = user.id;
 
-    const [profRes, walRes, bgtRes, txRes] = await Promise.all([
-      sb.from('profiles').select('id, email, user_name, hide_balance, created_at').eq('id', userId).maybeSingle(),
+    let [profRes, walRes, bgtRes, txRes] = await Promise.all([
+      sb.from('profiles').select('id, email, user_name, hide_balance, pin_salt, pin_hash, created_at').eq('id', userId).maybeSingle(),
       sb.from('wallets').select('id, client_id, name, subtitle, icon, badge, balance, sort_order').eq('user_id', userId).order('sort_order', { ascending: true }).order('created_at', { ascending: true }),
       sb.from('budgets').select('category_id, monthly_limit').eq('user_id', userId),
       sb.from('transactions').select('client_id, wallet_client_id, type, amount, category_id, note, tag, tx_date, tx_time, receipt_name').eq('user_id', userId).order('tx_date', { ascending: false }).order('tx_time', { ascending: false }).order('created_at', { ascending: false })
     ]);
+
+    if (profRes.error && String(profRes.error.code || '') === '42703') {
+      profRes = await sb.from('profiles').select('id, email, user_name, hide_balance, created_at').eq('id', userId).maybeSingle();
+    }
 
     if (profRes.error) throw profRes.error;
     if (walRes.error) throw walRes.error;
@@ -501,11 +517,14 @@
       receiptName: t.receipt_name
     }));
 
+    const cachedPin = vault.accounts[normalizeEmail(user.email)]?.data;
     return {
       createdAt: profRes.data.created_at || user.created_at || new Date().toISOString(),
       data: {
         userName: profRes.data.user_name || 'Pengguna',
         hideBalance: Boolean(profRes.data.hide_balance),
+        pinSalt: profRes.data.pin_salt || cachedPin?.pinSalt || '',
+        pinHash: profRes.data.pin_hash || cachedPin?.pinHash || '',
         wallets: wallets.length > 0 ? wallets : createEmptyUserData(profRes.data.user_name).wallets,
         budgets,
         transactions
@@ -578,6 +597,15 @@
         hide_balance: Boolean(op.payload.hideBalance)
       }).eq('id', userId);
       if (error) throw error;
+      return;
+    }
+
+    if (op.type === 'update_pin') {
+      const { error } = await sb.from('profiles').update({
+        pin_salt: op.payload.pinSalt || '',
+        pin_hash: op.payload.pinHash || ''
+      }).eq('id', userId);
+      if (error && String(error.code || '') !== '42703') throw error;
       return;
     }
 
@@ -1654,8 +1682,8 @@
       if (tab === 'catat') {
         const label = btn.querySelector('span:last-child');
         label.className = activeTab === 'catat'
-          ? 'font-label-sm text-label-sm text-primary font-bold mt-1'
-          : 'font-label-sm text-label-sm text-on-surface-variant mt-1';
+          ? 'mt-1 px-2.5 py-0.5 rounded-full bg-primary-container text-white font-label-sm text-label-sm font-bold shadow-xs ring-2 ring-primary-fixed'
+          : 'mt-1 px-2.5 py-0.5 rounded-full bg-primary text-white font-label-sm text-label-sm font-bold shadow-xs';
         return;
       }
       btn.className = tab === activeTab
@@ -3068,11 +3096,127 @@
     return { label: 'Offline Cache', cls: 'bg-surface-container-highest text-on-surface' };
   }
 
+  function openResetDataConfirmModal() {
+    if (!state?.pinHash || !state?.pinSalt) {
+      openModal(`
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2">
+            <div class="w-9 h-9 rounded-xl bg-error-container text-on-error-container flex items-center justify-center">
+              <span class="material-symbols-outlined text-[20px]">pin</span>
+            </div>
+            <h3 class="font-headline-sm text-headline-sm text-on-surface">PIN Belum Diatur</h3>
+          </div>
+          <button id="modal-close-btn" type="button" class="w-8 h-8 rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant">
+            <span class="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        </div>
+        <p class="font-body-sm text-body-sm text-on-surface-variant mb-4">
+          Untuk keamanan, fitur <strong>Reset Semua Data ke Nol (Rp 0)</strong> mewajibkan verifikasi <strong>Email Pengguna</strong> dan <strong>PIN 6 digit</strong>. Silakan buat PIN Keamanan Anda terlebih dahulu di menu Pengaturan Akun.
+        </p>
+        <div class="flex gap-2">
+          <button id="reset-go-pin-btn" type="button" class="flex-1 py-2.5 rounded-xl bg-primary text-on-primary font-label-md font-bold">
+            Buat PIN Sekarang
+          </button>
+          <button id="reset-cancel-btn" type="button" class="py-2.5 px-4 rounded-xl bg-surface-container text-on-surface font-label-md font-semibold">
+            Batal
+          </button>
+        </div>
+      `);
+      document.getElementById('modal-close-btn').onclick = closeModal;
+      document.getElementById('reset-cancel-btn').onclick = closeModal;
+      document.getElementById('reset-go-pin-btn').onclick = () => {
+        openAccountSettingsModal();
+        setTimeout(() => {
+          const pinInp = document.getElementById('acc-new-pin');
+          if (pinInp) {
+            pinInp.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            pinInp.focus();
+          }
+        }, 60);
+      };
+      return;
+    }
+
+    openModal(`
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <div class="w-9 h-9 rounded-xl bg-error-container text-on-error-container flex items-center justify-center">
+            <span class="material-symbols-outlined text-[20px]">warning</span>
+          </div>
+          <div>
+            <h3 class="font-headline-sm text-headline-sm text-on-surface">Reset Semua Data ke Nol</h3>
+            <p class="font-body-sm text-body-sm text-secondary">Tindakan ini tidak dapat dibatalkan</p>
+          </div>
+        </div>
+        <button id="modal-close-btn" type="button" class="w-8 h-8 rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant">
+          <span class="material-symbols-outlined text-[18px]">close</span>
+        </button>
+      </div>
+
+      <div class="p-3 rounded-xl bg-error-container/40 text-on-error-container text-body-sm mb-4">
+        Seluruh riwayat transaksi, dompet tambahan, dan batas anggaran akan dihapus serta saldo direset menjadi <strong>Rp 0</strong>.
+      </div>
+
+      <form id="reset-confirm-form" class="space-y-3" novalidate>
+        <div>
+          <label class="font-label-sm text-label-sm text-on-surface-variant" for="reset-confirm-email">Email Pengguna</label>
+          <input id="reset-confirm-email" type="email" autocomplete="off" placeholder="Ketik email akun Anda" class="mt-1 w-full px-3 py-2.5 rounded-xl bg-surface-container-low text-on-surface font-body-md focus:outline-none focus:ring-2 focus:ring-error/30" required>
+        </div>
+        <div>
+          <label class="font-label-sm text-label-sm text-on-surface-variant" for="reset-confirm-pin">PIN Keamanan (6 digit)</label>
+          <input id="reset-confirm-pin" type="password" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="••••••" class="mt-1 w-full px-3 py-2.5 rounded-xl bg-surface-container-low text-on-surface font-numeric-table tracking-widest focus:outline-none focus:ring-2 focus:ring-error/30" required>
+        </div>
+        <div class="flex gap-2 pt-1">
+          <button id="reset-cancel-btn" type="button" class="py-2.5 px-4 rounded-xl bg-surface-container text-on-surface font-label-md font-semibold">
+            Batal
+          </button>
+          <button type="submit" class="flex-1 py-2.5 rounded-xl bg-error text-on-error font-label-md font-bold flex items-center justify-center gap-1.5">
+            <span class="material-symbols-outlined text-[18px]">delete_forever</span>
+            <span>Reset ke Nol (Rp 0)</span>
+          </button>
+        </div>
+      </form>
+    `);
+
+    document.getElementById('modal-close-btn').onclick = closeModal;
+    document.getElementById('reset-cancel-btn').onclick = closeModal;
+    document.getElementById('reset-confirm-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const emailInput = normalizeEmail(document.getElementById('reset-confirm-email').value);
+      const pinInput = String(document.getElementById('reset-confirm-pin').value || '').trim();
+
+      if (!emailInput || emailInput !== normalizeEmail(currentEmail)) {
+        showToast('Email pengguna tidak sesuai dengan akun aktif', 'error');
+        return;
+      }
+      if (!/^\d{6}$/.test(pinInput)) {
+        showToast('PIN harus terdiri dari 6 digit angka', 'error');
+        return;
+      }
+      const attemptPinHash = await hashPassword(pinInput, state.pinSalt);
+      if (attemptPinHash !== state.pinHash) {
+        showToast('PIN keamanan salah. Reset data dibatalkan.', 'error');
+        return;
+      }
+
+      state = createEmptyUserData(state.userName, {
+        pinSalt: state.pinSalt,
+        pinHash: state.pinHash
+      });
+      saveState();
+      syncCloudAction({ type: 'reset_data' });
+      closeModal();
+      showToast('Semua data berhasil direset ke nol (Rp 0)');
+      render();
+    };
+  }
+
   function openAccountSettingsModal() {
     const acc = vault.accounts[currentEmail];
     const initial = (state.userName || currentEmail || 'U').trim().charAt(0).toUpperCase();
     const installed = isAppInstalled();
     const badge = getSyncBadgeMeta();
+    const hasPin = Boolean(state.pinHash && state.pinSalt);
 
     openModal(`
       <div class="flex items-center justify-between mb-4">
@@ -3111,6 +3255,29 @@
             <input id="acc-name" type="text" value="${esc(state.userName)}" class="flex-1 px-3 py-2 rounded-lg bg-surface-container-low text-on-surface focus:outline-none">
             <button id="acc-save-name" type="button" class="px-3.5 py-2 rounded-lg bg-primary text-on-primary font-label-sm font-bold">Simpan</button>
           </div>
+        </div>
+
+        <!-- Security PIN (6 Digit) -->
+        <div class="p-3 rounded-xl bg-surface-container-low space-y-2">
+          <div class="flex items-center justify-between">
+            <p class="font-label-md text-on-surface font-semibold flex items-center gap-1.5">
+              <span class="material-symbols-outlined text-[17px] text-primary">pin</span>
+              <span>PIN Keamanan (6 Digit)</span>
+            </p>
+            <span class="px-2 py-0.5 rounded-full ${hasPin ? 'bg-primary/10 text-primary' : 'bg-surface-container-highest text-on-surface-variant'} font-label-sm text-[10px] font-bold">
+              ${hasPin ? 'PIN Aktif' : 'Belum Diatur'}
+            </span>
+          </div>
+          ${hasPin ? `
+            <input id="acc-old-pin" type="password" inputmode="numeric" maxlength="6" placeholder="PIN saat ini (6 digit)" class="w-full px-3 py-2 rounded-lg bg-surface-container-lowest text-on-surface text-body-sm tracking-widest focus:outline-none">
+            <input id="acc-new-pin" type="password" inputmode="numeric" maxlength="6" placeholder="PIN baru (6 digit angka)" class="w-full px-3 py-2 rounded-lg bg-surface-container-lowest text-on-surface text-body-sm tracking-widest focus:outline-none">
+          ` : `
+            <input id="acc-new-pin" type="password" inputmode="numeric" maxlength="6" placeholder="Buat PIN 6 digit angka" class="w-full px-3 py-2 rounded-lg bg-surface-container-lowest text-on-surface text-body-sm tracking-widest focus:outline-none">
+            <input id="acc-confirm-pin" type="password" inputmode="numeric" maxlength="6" placeholder="Ulangi PIN 6 digit" class="w-full px-3 py-2 rounded-lg bg-surface-container-lowest text-on-surface text-body-sm tracking-widest focus:outline-none">
+          `}
+          <button id="acc-save-pin" type="button" class="w-full py-2 rounded-lg bg-surface-container-highest text-on-surface font-label-sm font-bold hover:opacity-90">
+            ${hasPin ? 'Ubah PIN Keamanan' : 'Simpan PIN Keamanan'}
+          </button>
         </div>
 
         <!-- Change Password -->
@@ -3188,6 +3355,45 @@
       render();
     };
 
+    document.getElementById('acc-save-pin').onclick = async () => {
+      const newPin = String(document.getElementById('acc-new-pin').value || '').trim();
+      if (hasPin) {
+        const oldPin = String(document.getElementById('acc-old-pin')?.value || '').trim();
+        if (!/^\d{6}$/.test(oldPin)) {
+          showToast('Masukkan PIN saat ini (6 digit angka)', 'error');
+          return;
+        }
+        const oldPinHash = await hashPassword(oldPin, state.pinSalt);
+        if (oldPinHash !== state.pinHash) {
+          showToast('PIN saat ini salah', 'error');
+          return;
+        }
+      } else {
+        const confirmPin = String(document.getElementById('acc-confirm-pin')?.value || '').trim();
+        if (newPin !== confirmPin) {
+          showToast('Konfirmasi PIN tidak cocok', 'error');
+          return;
+        }
+      }
+
+      if (!/^\d{6}$/.test(newPin)) {
+        showToast('PIN harus 6 digit angka', 'error');
+        return;
+      }
+
+      const pinSalt = generateSalt();
+      const pinHash = await hashPassword(newPin, pinSalt);
+      state.pinSalt = pinSalt;
+      state.pinHash = pinHash;
+      saveState();
+      syncCloudAction({
+        type: 'update_pin',
+        payload: { pinSalt, pinHash }
+      });
+      showToast(hasPin ? 'PIN keamanan berhasil diubah' : 'PIN keamanan berhasil dibuat');
+      openAccountSettingsModal();
+    };
+
     document.getElementById('acc-save-pw').onclick = async () => {
       const oldPw = document.getElementById('acc-old-pw').value;
       const newPw = document.getElementById('acc-new-pw').value;
@@ -3245,14 +3451,7 @@
       };
     }
 
-    document.getElementById('acc-clear-data').onclick = () => {
-      state = createEmptyUserData(state.userName);
-      saveState();
-      syncCloudAction({ type: 'reset_data' });
-      closeModal();
-      showToast('Semua data direset ke nol (Rp 0)');
-      render();
-    };
+    document.getElementById('acc-clear-data').onclick = openResetDataConfirmModal;
 
     document.getElementById('acc-logout-btn').onclick = async () => {
       saveState();
