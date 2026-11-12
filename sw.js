@@ -1,4 +1,4 @@
-const CACHE_NAME = 'finora-pwa-v5';
+const CACHE_NAME = 'finora-pwa-v6';
 const APP_SHELL = [
   './',
   './index.html',

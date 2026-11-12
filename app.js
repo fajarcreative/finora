@@ -263,6 +263,16 @@
     return `${window.location.origin}${window.location.pathname}`;
   }
 
+  function isMissingColumnError(err) {
+    const code = String(err?.code || '');
+    const msg = String(err?.message || '');
+    return (
+      code === '42703' ||
+      code === 'PGRST204' ||
+      /Could not find the '.*' column|column .* does not exist/i.test(msg)
+    );
+  }
+
   function isMissingSchemaError(err) {
     const code = String(err?.code || '');
     const msg = String(err?.message || '');
@@ -313,6 +323,7 @@
   let isBootstrapping = Boolean(sb);
   let pendingVerificationEmail = '';
   let syncStatus = 'idle'; // 'idle' | 'syncing' | 'synced' | 'offline' | 'local-only' | 'schema-missing'
+  let lastSyncError = '';
   let lastSyncedAt = null;
   let realtimeChannel = null;
   let realtimeRefreshTimer = null;
@@ -390,7 +401,7 @@
       profilePayload.pin_hash = data.pinHash || '';
     }
     let { error: profErr } = await sb.from('profiles').upsert(profilePayload, { onConflict: 'id' });
-    if (profErr && String(profErr.code || '') === '42703') {
+    if (profErr && isMissingColumnError(profErr)) {
       delete profilePayload.pin_salt;
       delete profilePayload.pin_hash;
       ({ error: profErr } = await sb.from('profiles').upsert(profilePayload, { onConflict: 'id' }));
@@ -474,7 +485,7 @@
       sb.from('transactions').select('client_id, wallet_client_id, type, amount, category_id, note, tag, tx_date, tx_time, receipt_name').eq('user_id', userId).order('tx_date', { ascending: false }).order('tx_time', { ascending: false }).order('created_at', { ascending: false })
     ]);
 
-    if (profRes.error && String(profRes.error.code || '') === '42703') {
+    if (profRes.error && isMissingColumnError(profRes.error)) {
       profRes = await sb.from('profiles').select('id, email, user_name, hide_balance, created_at').eq('id', userId).maybeSingle();
     }
 
@@ -605,7 +616,7 @@
         pin_salt: op.payload.pinSalt || '',
         pin_hash: op.payload.pinHash || ''
       }).eq('id', userId);
-      if (error && String(error.code || '') !== '42703') throw error;
+      if (error && !isMissingColumnError(error)) throw error;
       return;
     }
 
@@ -736,9 +747,11 @@
         cloudLinked: true
       });
       syncStatus = 'synced';
+      lastSyncError = '';
       lastSyncedAt = new Date();
       subscribeRealtime(user.id);
     } catch (err) {
+      lastSyncError = String(err?.message || err?.code || '');
       if (isMissingSchemaError(err)) {
         syncStatus = 'schema-missing';
         state = prevLocalData || createEmptyUserData(user.user_metadata?.user_name || email.split('@')[0]);
@@ -751,7 +764,7 @@
         state = prevLocalData || createEmptyUserData(user.user_metadata?.user_name || email.split('@')[0]);
         cacheUserStateLocally(email, state, { cloudLinked: true });
         if (!options.silent) {
-          showToast('Memuat cache lokal (mode offline).');
+          showToast(`Gagal sinkron Cloud: ${lastSyncError || 'mode offline'}`, 'error');
         }
       }
     }
@@ -775,13 +788,15 @@
         cloudLinked: true
       });
       syncStatus = 'synced';
+      lastSyncError = '';
       lastSyncedAt = new Date();
       render();
       if (!silent) showToast('Data tersinkron dengan Cloud!');
     } catch (err) {
+      lastSyncError = String(err?.message || err?.code || '');
       if (isMissingSchemaError(err)) syncStatus = 'schema-missing';
       else syncStatus = 'offline';
-      if (!silent) showToast('Gagal menyinkronkan data. Periksa koneksi Anda.', 'error');
+      if (!silent) showToast(`Gagal menyinkronkan: ${lastSyncError || 'periksa koneksi Anda'}`, 'error');
     }
   }
 
@@ -1715,10 +1730,30 @@
     const peakDay = last7.reduce((best, cur) => (cur.spent > best.spent ? cur : best), last7[0]);
 
     const showInstallBanner = !isAppInstalled() && !installBannerDismissed;
+    const waitingEmailVerif = syncStatus === 'local-only' && pendingVerificationEmail === currentEmail;
+    const syncChip = getSyncBadgeMeta();
 
     mainEl.innerHTML = `
       <div class="flex flex-col w-full pb-4 space-y-space-md">
-        ${syncStatus === 'local-only' ? `
+        ${waitingEmailVerif ? `
+          <div class="px-margin-mobile">
+            <div class="bg-primary-fixed/50 rounded-xl p-3 space-y-2 shadow-xs">
+              <div class="flex items-start gap-2.5">
+                <span class="material-symbols-outlined text-primary text-[22px] shrink-0">mark_email_unread</span>
+                <div class="min-w-0 flex-1">
+                  <p class="font-label-md text-label-md text-on-primary-fixed font-bold">Menunggu Konfirmasi Email</p>
+                  <p class="font-body-sm text-body-sm text-on-primary-fixed-variant">
+                    Klik link verifikasi yang dikirim ke <strong>${esc(currentEmail)}</strong> (cek Inbox/Spam), lalu klik Coba Sinkron.
+                  </p>
+                </div>
+              </div>
+              <div class="flex gap-2">
+                <button id="banner-resend-verif-btn" type="button" class="flex-1 py-1.5 px-3 rounded-lg bg-surface-container-lowest text-primary font-label-sm font-bold">Kirim Ulang Email</button>
+                <button id="banner-link-cloud-btn" type="button" class="flex-1 py-1.5 px-3 rounded-lg bg-primary text-on-primary font-label-sm font-bold">Coba Sinkron</button>
+              </div>
+            </div>
+          </div>
+        ` : syncStatus === 'local-only' ? `
           <div class="px-margin-mobile">
             <div class="bg-tertiary-fixed/50 rounded-xl p-3 flex items-center justify-between gap-2 shadow-xs">
               <div class="flex items-center gap-2.5 min-w-0">
@@ -1732,6 +1767,22 @@
               </div>
               <button id="banner-link-cloud-btn" type="button" class="px-3 py-1.5 rounded-lg bg-tertiary text-on-tertiary font-label-sm text-label-sm font-bold shadow-xs shrink-0 active:scale-95 transition-transform">
                 Hubungkan
+              </button>
+            </div>
+          </div>
+        ` : (syncStatus === 'offline' || syncStatus === 'schema-missing') && cloudUser ? `
+          <div class="px-margin-mobile">
+            <div class="bg-error-container/50 rounded-xl p-3 flex items-center justify-between gap-2 shadow-xs">
+              <div class="min-w-0">
+                <p class="font-label-md text-label-md text-on-error-container font-bold truncate">
+                  ${syncStatus === 'schema-missing' ? 'Tabel Supabase Belum Disiapkan' : 'Sinkronisasi Cloud Tertunda'}
+                </p>
+                <p class="font-body-sm text-body-sm text-on-error-container/80 truncate">
+                  ${esc(lastSyncError || 'Periksa koneksi internet Anda lalu coba sinkronkan ulang.')}
+                </p>
+              </div>
+              <button id="banner-retry-sync-btn" type="button" class="px-3 py-1.5 rounded-lg bg-error text-on-error font-label-sm text-label-sm font-bold shrink-0">
+                Coba Lagi
               </button>
             </div>
           </div>
@@ -1768,7 +1819,10 @@
               <span class="font-headline-md text-headline-md text-on-surface truncate">Halo, ${esc(state.userName)}!</span>
               <span class="text-[20px]">👋</span>
             </div>
-            <span class="font-body-sm text-body-sm text-on-surface-variant truncate">${esc(formatTodayBanner())} • ${esc(currentEmail)}</span>
+            <div class="flex items-center gap-1.5 min-w-0">
+              <span class="font-body-sm text-body-sm text-on-surface-variant truncate">${esc(currentEmail)}</span>
+              <span class="px-1.5 py-0.5 rounded-full ${syncChip.cls} font-label-sm text-[9px] font-bold shrink-0">${esc(syncChip.label)}</span>
+            </div>
           </div>
           <div class="w-10 h-10 rounded-full bg-primary-fixed flex items-center justify-center text-on-primary-fixed shadow-sm shrink-0">
             <span class="material-symbols-outlined text-[20px]" style="font-variation-settings: 'FILL' 1;">eco</span>
@@ -1975,6 +2029,29 @@
 
     const linkCloudBtn = document.getElementById('banner-link-cloud-btn');
     if (linkCloudBtn) linkCloudBtn.onclick = openLinkCloudModal;
+
+    const resendBannerBtn = document.getElementById('banner-resend-verif-btn');
+    if (resendBannerBtn) {
+      resendBannerBtn.onclick = async () => {
+        if (!sb || !currentEmail) return;
+        resendBannerBtn.disabled = true;
+        resendBannerBtn.textContent = 'Mengirim...';
+        const { error } = await sb.auth.resend({
+          type: 'signup',
+          email: currentEmail,
+          options: { emailRedirectTo: getAuthRedirectUrl() }
+        });
+        if (error) showToast(mapAuthErrorMessage(error), 'error');
+        else showToast(`Email verifikasi dikirim ulang ke ${currentEmail}`);
+        resendBannerBtn.disabled = false;
+        resendBannerBtn.textContent = 'Kirim Ulang Email';
+      };
+    }
+
+    const retrySyncBtn = document.getElementById('banner-retry-sync-btn');
+    if (retrySyncBtn) {
+      retrySyncBtn.onclick = () => refreshFromCloud({ silent: false });
+    }
 
     const bannerInstallBtn = document.getElementById('banner-install-btn');
     if (bannerInstallBtn) bannerInstallBtn.onclick = triggerInstall;
